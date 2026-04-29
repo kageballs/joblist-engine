@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Personal resume & project data (keep out of public repo)
+data/resume.md
+data/*.pdf
+data/seen_jobs.json
+data/debug_page.html
+
+# Keep the data directory itself
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
