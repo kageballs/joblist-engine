@@ -30,12 +30,29 @@ class Profile:
     accept_offsets: frozenset[int]
     target_hourly_usd: float
     absolute_floor_hourly_usd: float
+    inbound_floor_hourly_usd: float
     role_include: tuple[re.Pattern, ...]
     role_exclude: tuple[re.Pattern, ...]
     employer_blocklist: tuple[str, ...]
+    employer_flags: tuple[str, ...]
     resume_path: str
     display_threshold: int
     resume: str = field(default="", repr=False)
+
+    def flagged_employer(self, company: str) -> str | None:
+        """Known rate-anchoring employer: surfaced with a reason, not hidden.
+
+        Distinct from `employer_blocklist`, which rejects outright. A flag
+        keeps the listing visible and lets the scorer explain the tradeoff,
+        so the choice is made per posting rather than by never seeing it.
+        """
+        text = (company or "").casefold()
+        if not text:
+            return None
+        for name in self.employer_flags:
+            if name.casefold() in text:
+                return name
+        return None
 
     def region_allowed(self, restriction: str) -> bool:
         """Does one stated restriction admit this person?
@@ -95,6 +112,11 @@ def load(path: str | None = None) -> Profile:
             f"the target is what you ask for."
         )
 
+    # The line between "apply now" and "worth pushing on rate". Outbound
+    # applications take the lower floor; this is the number you would hold if
+    # they had approached you, and it only ever affects presentation.
+    inbound_floor = float(rate.get("inbound_floor_hourly_usd", target))
+
     resume_path = scoring.get("resume_path", "data/resume.md")
     resume = ""
     if os.path.exists(resume_path):
@@ -111,9 +133,11 @@ def load(path: str | None = None) -> Profile:
         accept_offsets=frozenset(int(x) for x in raw["timezone"].get("accept") or []),
         target_hourly_usd=target,
         absolute_floor_hourly_usd=floor,
+        inbound_floor_hourly_usd=inbound_floor,
         role_include=_patterns(roles.get("include"), "include"),
         role_exclude=_patterns(roles.get("exclude"), "exclude"),
         employer_blocklist=tuple(raw.get("employers", {}).get("blocklist") or []),
+        employer_flags=tuple(raw.get("employers", {}).get("flag") or []),
         resume_path=resume_path,
         display_threshold=int(scoring.get("display_threshold", 60)),
         resume=resume,

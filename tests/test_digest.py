@@ -74,10 +74,59 @@ def test_below_threshold_jobs_are_still_shown_with_reasons(profile, digest_dir):
     assert "wrong stack" in text
 
 
-def test_local_anchor_is_flagged_in_the_entry(profile, digest_dir):
-    verdict = filters.evaluate(a_job(location_restrictions=("Nigeria",)), profile, NOW)
-    result = {"i": 0, "score": 80, "verdict": "strong", "why": "good fit",
-              "matched_skills": ["Go"], "concerns": [], "cv_variant": "engineering"}
+def a_result(**kw):
+    base = {"i": 0, "score": 80, "verdict": "strong", "why": "good fit",
+            "matched_skills": ["Go"], "concerns": [], "cv_variant": "engineering"}
+    base.update(kw)
+    return base
 
-    text = digest.render(filters.Funnel(), [(verdict, result)], profile, "m", NOW)
-    assert "Restricted to your own country" in text
+
+def test_own_country_is_noted_but_not_warned_about(profile, digest_dir):
+    """Neutral since 2026-08-24: PH-eligible is often the fastest yes."""
+    verdict = filters.evaluate(a_job(location_restrictions=("Nigeria",)), profile, NOW)
+    text = digest.render(filters.Funnel(), [(verdict, a_result())], profile, "m", NOW)
+    assert "Nigeria-eligible" in text or "eligible" in text
+    assert "often local-rate pay" not in text
+
+
+def test_flagged_employer_is_shown_not_hidden(profile, digest_dir):
+    """A flag explains the tradeoff; a blocklist would have deleted the job."""
+    flagged = targeting.Profile(**{**profile.__dict__, "employer_flags": ("Havershill",)})
+    verdict = filters.evaluate(a_job(company="Havershill Staffing Ltd"), flagged, NOW)
+
+    assert verdict.passed, "a flagged employer must not be rejected"
+    assert verdict.flagged_employer == "Havershill"
+    text = digest.render(filters.Funnel(), [(verdict, a_result())], flagged, "m", NOW)
+    assert "Havershill" in text
+    assert "outsourcing intermediary" in text
+
+
+def test_digest_splits_on_the_inbound_line(profile, digest_dir):
+    """Both groups are worth applying to; they differ on pushing the rate."""
+    low = filters.evaluate(
+        a_job(source_id="low", title="Backend A", salary_max=40000,
+              currency="USD", salary_period="annual"), profile, NOW)
+    high = filters.evaluate(
+        a_job(source_id="high", title="Backend B", salary_max=150000,
+              currency="USD", salary_period="annual"), profile, NOW)
+
+    assert low.clears_inbound_floor is False
+    assert high.clears_inbound_floor is True
+
+    text = digest.render(
+        filters.Funnel(),
+        [(low, a_result(i=0)), (high, a_result(i=1))],
+        profile, "m", NOW,
+    )
+    assert "Apply now" in text
+    assert "Worth the ask" in text
+    assert text.index("Apply now") < text.index("Worth the ask")
+
+
+def test_unstated_salary_lands_in_worth_the_ask(profile, digest_dir):
+    """Nothing stated means nothing to push back on yet — it is still an ask."""
+    verdict = filters.evaluate(a_job(salary_max=None), profile, NOW)
+    assert verdict.clears_inbound_floor is True
+    text = digest.render(filters.Funnel(), [(verdict, a_result())], profile, "m", NOW)
+    assert "Worth the ask" in text
+    assert "Apply now" not in text

@@ -31,17 +31,25 @@ role serves the candidate:
   60-84   maybe    plausible, some gap in stack, seniority or domain
   0-59    no       wrong discipline, wrong level, or the role would waste them
 
+The candidate needs work soon and is applying outbound, so a modest rate is
+not a reason to score low. Judge the work, and put rate concerns in
+`concerns` where they can be read, rather than burying them in the score.
+
 Weigh these down:
-  - Listings restricted to the candidate's own country. These usually come
-    from local-market employers paying local rates, which is the exact thing
-    this candidate is trying to avoid. Say so in `concerns`.
-  - Body shops, outsourcing intermediaries and agencies hiring "for our client".
-  - Roles far below their seniority.
+  - Listings marked FLAGGED EMPLOYER. These are outsourcing intermediaries
+    that quote local rates and are a poor long-term anchor. Still a real job:
+    score the work honestly and name the tradeoff in `concerns`.
+  - Agencies hiring "for our client" without naming them.
+  - Roles far below their seniority, or that would not build on their record.
 
 Weigh these up:
   - No hiring-location restriction at all, which means genuinely worldwide.
   - Employers who state location-independent pay.
   - Work matching the candidate's demonstrated impact, not just their keywords.
+  - Anything that could start soon.
+
+Do NOT mark a listing down merely for being open to the candidate's own
+country. That is neutral, and often the fastest route to a start date.
 
 `why` is one sentence, concrete, naming the specific overlap or gap. Never
 generic praise. `cv_variant` picks which CV to send: "automation" for
@@ -124,8 +132,8 @@ def render_batch(verdicts) -> str:
             f"  hiring regions: {regions}",
             f"  salary: {salary} ({v.salary_signal})",
         ]
-        if v.local_anchor:
-            block.append("  NOTE: restricted to the candidate's own country")
+        if v.flagged_employer:
+            block.append(f"  FLAGGED EMPLOYER: {v.flagged_employer} (rate-anchoring intermediary)")
         if v.eligibility_notes:
             block.append("  eligibility text found: " + " | ".join(v.eligibility_notes))
         block.append("  description: " + _clip(job.description or job.excerpt))

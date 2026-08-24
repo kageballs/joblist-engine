@@ -42,10 +42,23 @@ def render(funnel, scored_pairs, profile, model, started_at, no_llm=False) -> st
     ]
 
     if shown:
-        lines.append("## Matches")
-        lines.append("")
-        for verdict, result in shown:
-            lines.append(_entry(verdict, result))
+        # Split by the inbound line, not by score. Both groups are worth
+        # applying to; they differ in whether the rate is worth pushing on.
+        ask = [(v, r) for v, r in shown if v.clears_inbound_floor]
+        now = [(v, r) for v, r in shown if not v.clears_inbound_floor]
+
+        if now:
+            lines.append(f"## Apply now — under ${profile.inbound_floor_hourly_usd:.0f}/hr")
+            lines.append("")
+            for verdict, result in now:
+                lines.append(_entry(verdict, result))
+        if ask:
+            lines.append(
+                f"## Worth the ask — ${profile.inbound_floor_hourly_usd:.0f}/hr+ or unstated"
+            )
+            lines.append("")
+            for verdict, result in ask:
+                lines.append(_entry(verdict, result))
     elif ranked:
         lines.append(f"## No matches above {profile.display_threshold}")
         lines.append("")
@@ -107,8 +120,12 @@ def _entry(verdict, result) -> str:
         bits.append("Matches: " + ", ".join(result["matched_skills"][:8]))
     if result.get("concerns"):
         bits.append("Concerns: " + "; ".join(result["concerns"][:4]))
+    if verdict.flagged_employer:
+        bits.append(
+            f"⚠️ {verdict.flagged_employer} — outsourcing intermediary, poor long-term anchor."
+        )
     if verdict.local_anchor:
-        bits.append("⚠️ Restricted to your own country — often local-rate pay.")
+        bits.append("Philippines-eligible.")
     annual = job.annual_usd_max()
     if annual:
         bits.append(f"Salary: up to {annual:,} USD/yr")

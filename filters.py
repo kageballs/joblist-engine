@@ -61,7 +61,12 @@ class Verdict:
     reason: str = ""
     salary_signal: str = SALARY_UNKNOWN
     local_anchor: bool = False
+    flagged_employer: str | None = None
     eligibility_notes: list[str] = field(default_factory=list)
+    # Splits the digest, never rejects. True when the stated rate clears the
+    # inbound line, and also when nothing is stated at all — an unstated rate
+    # is a rate worth asking about.
+    clears_inbound_floor: bool = True
 
     @property
     def passed(self) -> bool:
@@ -159,8 +164,11 @@ def evaluate(job: Job, profile: Profile, now: datetime | None = None) -> Verdict
     if annual is not None:
         target_annual = profile.target_hourly_usd * HOURS_PER_YEAR
         verdict.salary_signal = SALARY_ABOVE if annual >= target_annual else SALARY_BELOW
+        # An unstated rate stays True: nothing to push back on yet.
+        verdict.clears_inbound_floor = annual >= profile.inbound_floor_hourly_usd * HOURS_PER_YEAR
 
     verdict.local_anchor = profile.is_local_anchor(job.location_restrictions)
+    verdict.flagged_employer = profile.flagged_employer(job.company)
     verdict.eligibility_notes = eligibility_sentences(job.description)
 
     for name, stage in STAGES:

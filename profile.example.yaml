@@ -31,10 +31,21 @@ timezone:
   accept: [0, 1, 2, 3, 4, 5]
 
 rate:
+  # What you ask for. Not a reject line — the scorer weighs distance from it.
   target_hourly_usd: 40
+
   # Reject only what is CERTAINLY below this. Never reject on a missing or
   # ambiguous salary: most listings state none at all.
+  #
+  # Worth setting this by direction. When you approach them, a cold
+  # application is a weaker position and a lower floor surfaces work you can
+  # start now and grow out of. When they approach you, hold the higher number.
+  # This tool reads postings you would apply to, so it is the outbound case.
   absolute_floor_hourly_usd: 30
+
+  # Presentation only. Splits the digest into "Apply now" and "Worth the ask"
+  # so a low floor never hides which listings are worth pushing on rate.
+  inbound_floor_hourly_usd: 45
 
 roles:
   # An include list is a tradeoff, not a default. It saves tokens, but a regex
@@ -59,8 +70,14 @@ roles:
     - recruiter
 
 employers:
-  # Outsourcing middlemen and body shops that quote local rates.
+  # Hard reject. Usually better left empty — never seeing a listing is not a
+  # decision you get to make later.
   blocklist: []
+
+  # Outsourcing middlemen and body shops that quote local rates. These still
+  # reach the scorer, which marks them down and explains why, so the tradeoff
+  # is judged per posting rather than by a blanket veto.
+  flag: []
 
 scoring:
   # Point this at your own CV as plain text or markdown.
