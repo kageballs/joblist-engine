@@ -1,0 +1,62 @@
+# Copy to profile.yaml and edit. profile.yaml is gitignored and never leaves
+# your machine — it holds your rate floor, your resume, and your opinions about
+# employers, none of which belong in a public repo.
+#
+# This example is a fictional person so the repo is runnable out of the box.
+
+identity:
+  name: Sam Okafor
+  based_in: Lagos, Nigeria
+  utc_offset: 1
+
+regions:
+  # These only matter when a listing DOES restrict hiring. A listing with an
+  # empty restriction list is unrestricted, and that is the good case.
+  allow:
+    - Nigeria
+    - Africa
+    - EMEA
+    - Anywhere in the World
+    - Worldwide
+    - Global
+  deny: []
+  # Listings restricted to your OWN country often come from local-market
+  # employers paying local rates. Not rejected — flagged, and the scorer is
+  # told to treat it as a downward signal.
+  local_anchor: [Nigeria]
+
+timezone:
+  # Accept a listing if its required UTC offsets intersect this set. An empty
+  # requirement on the listing always passes.
+  accept: [0, 1, 2, 3, 4, 5]
+
+rate:
+  target_hourly_usd: 40
+  # Reject only what is CERTAINLY below this. Never reject on a missing or
+  # ambiguous salary: most listings state none at all.
+  absolute_floor_hourly_usd: 30
+
+roles:
+  include:
+    - backend
+    - full.?stack
+    - platform engineer
+    - devops
+    - site reliability
+  exclude:
+    - intern
+    - unpaid
+    - commission only
+    - sales
+    - recruiter
+
+employers:
+  # Outsourcing middlemen and body shops that quote local rates.
+  blocklist: []
+
+scoring:
+  # Point this at your own CV as plain text or markdown.
+  resume_path: examples/resume.example.md
+  # Display filter only. Every scored job is stored regardless, so that
+  # changing this number never rewrites history.
+  display_threshold: 60

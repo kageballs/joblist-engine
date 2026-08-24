@@ -1,13 +1,13 @@
 # Secrets
 .env
 
-# Personal resume & project data (keep out of public repo)
-data/resume.md
-data/*.pdf
-data/seen_jobs.json
-data/debug_page.html
+# Your targeting rules: rate floor, employer blocklist, resume path.
+# Never commit this. profile.example.yaml is the committed template.
+profile.yaml
 
-# Keep the data directory itself
+# Everything local: the resume, the CV builder, the SQLite store, digests.
+# Nothing under data/ belongs in a public repo.
+data/
 !data/.gitkeep
 
 # Python
@@ -17,3 +17,5 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
