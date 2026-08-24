@@ -33,6 +33,7 @@ class Profile:
     inbound_floor_hourly_usd: float
     role_include: tuple[re.Pattern, ...]
     role_exclude: tuple[re.Pattern, ...]
+    role_exclude_unless_paid: tuple[re.Pattern, ...]
     employer_blocklist: tuple[str, ...]
     employer_flags: tuple[str, ...]
     resume_path: str
@@ -136,6 +137,9 @@ def load(path: str | None = None) -> Profile:
         inbound_floor_hourly_usd=inbound_floor,
         role_include=_patterns(roles.get("include"), "include"),
         role_exclude=_patterns(roles.get("exclude"), "exclude"),
+        role_exclude_unless_paid=_patterns(
+            roles.get("exclude_unless_paid"), "exclude_unless_paid"
+        ),
         employer_blocklist=tuple(raw.get("employers", {}).get("blocklist") or []),
         employer_flags=tuple(raw.get("employers", {}).get("flag") or []),
         resume_path=resume_path,

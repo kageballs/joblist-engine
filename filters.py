@@ -139,6 +139,20 @@ def stage_role(job: Job, profile: Profile, now: datetime) -> str | None:
     for pattern in profile.role_exclude:
         if pattern.search(haystack):
             return f"excluded title ({pattern.pattern})"
+
+    # Titles worth taking only when the money is confirmed — junior bands and
+    # the like. This leans on stage order: `salary` runs before `role`, so
+    # anything with a stated rate BELOW the floor is already gone by now. The
+    # only case left to catch is a stated rate that is missing entirely.
+    #
+    # A non-USD figure also counts as unconfirmed, because annual_usd_max()
+    # will not guess a conversion. That over-rejects slightly, and it is the
+    # right way round: the point of this rule is confirmation.
+    if profile.role_exclude_unless_paid and job.annual_usd_max() is None:
+        for pattern in profile.role_exclude_unless_paid:
+            match = pattern.search(haystack)
+            if match:
+                return f"'{match.group(0)}' title and no salary stated"
     if not profile.role_include:
         return None
     if any(pattern.search(haystack) for pattern in profile.role_include):

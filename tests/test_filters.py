@@ -5,6 +5,7 @@ over-rejection: a filter that quietly drops everything looks identical to a
 quiet job market, and the tool would just report zero forever.
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -263,3 +264,57 @@ def test_exclude_still_applies_without_include(profile):
     loose = _no_include(profile)
     verdict = filters.evaluate(make_job(title="Backend Engineering Intern"), loose, NOW)
     assert verdict.rejected_by == "role"
+
+
+# -- exclude_unless_paid --------------------------------------------------
+
+def _unless_paid(profile, *patterns):
+    return targeting.Profile(
+        **{**profile.__dict__,
+           "role_exclude_unless_paid": tuple(re.compile(p, re.I) for p in patterns)}
+    )
+
+
+def test_junior_without_stated_salary_is_rejected(profile):
+    p = _unless_paid(profile, r"\bjunior\b")
+    verdict = filters.evaluate(make_job(title="Junior Backend Engineer"), p, NOW)
+    assert verdict.rejected_by == "role"
+    assert "no salary stated" in verdict.reason
+
+
+def test_junior_with_salary_above_floor_passes(profile):
+    """Salary runs before role, so a stated figure here already cleared the floor."""
+    p = _unless_paid(profile, r"\bjunior\b")
+    verdict = filters.evaluate(
+        make_job(title="Junior Backend Engineer", salary_max=100000,
+                 currency="USD", salary_period="annual"),
+        p, NOW,
+    )
+    assert verdict.passed
+
+
+def test_junior_with_salary_below_floor_dies_at_salary_not_role(profile):
+    """The earlier stage must own the rejection, so the funnel blames the rate."""
+    p = _unless_paid(profile, r"\bjunior\b")
+    verdict = filters.evaluate(
+        make_job(title="Junior Backend Engineer", salary_max=20000,
+                 currency="USD", salary_period="annual"),
+        p, NOW,
+    )
+    assert verdict.rejected_by == "salary"
+
+
+def test_non_usd_salary_counts_as_unconfirmed(profile):
+    """Deliberate over-rejection: the rule is about confirmation, not optimism."""
+    p = _unless_paid(profile, r"\bjunior\b")
+    verdict = filters.evaluate(
+        make_job(title="Junior Backend Engineer", salary_max=90000,
+                 currency="EUR", salary_period="annual"),
+        p, NOW,
+    )
+    assert verdict.rejected_by == "role"
+
+
+def test_senior_title_unaffected_by_the_rule(profile):
+    p = _unless_paid(profile, r"\bjunior\b")
+    assert filters.evaluate(make_job(title="Senior Backend Engineer"), p, NOW).passed

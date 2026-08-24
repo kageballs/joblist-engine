@@ -69,6 +69,12 @@ roles:
     - sales
     - recruiter
 
+  # Rejected UNLESS the listing states a rate that clears your floor. For
+  # titles worth taking when the money is real, and not worth an application
+  # when it is unstated. Relies on stage order: `salary` runs before `role`,
+  # so a stated rate below the floor is already gone by this point.
+  exclude_unless_paid: []
+
 employers:
   # Hard reject. Usually better left empty — never seeing a listing is not a
   # decision you get to make later.
