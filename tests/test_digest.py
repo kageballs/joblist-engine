@@ -90,7 +90,13 @@ def test_own_country_is_noted_but_not_warned_about(profile, digest_dir):
 
 
 def test_flagged_employer_is_shown_not_hidden(profile, digest_dir):
-    """A flag explains the tradeoff; a blocklist would have deleted the job."""
+    """A flag explains the tradeoff; a blocklist would have deleted the job.
+
+    The company here is invented, deliberately. Real names from a flag list
+    are the thing profile.yaml exists to keep out of a public repo, and a
+    fixture asserting "outsourcing intermediary" against a real employer is
+    a published opinion about them. Test files are still the repo.
+    """
     flagged = targeting.Profile(**{**profile.__dict__, "employer_flags": ("Havershill",)})
     verdict = filters.evaluate(a_job(company="Havershill Staffing Ltd"), flagged, NOW)
 
