@@ -1,3 +1,0 @@
-# Paste your resume here as plain text.
-# Delete this comment and everything above, then save the file.
-# Run: python main.py --dry-run
