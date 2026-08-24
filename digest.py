@@ -121,9 +121,18 @@ def _entry(verdict, result) -> str:
 
 
 def write(text: str, when: datetime | None = None) -> str:
+    """Append to the day's digest rather than replacing it.
+
+    Runs are per-day files but there can be several runs a day, and the second
+    one usually finds nothing new. Overwriting would silently delete the
+    morning's matches, which is the one outcome worse than finding nothing.
+    """
     when = when or datetime.now(UTC)
     os.makedirs(config.DIGEST_DIR, exist_ok=True)
     path = os.path.join(config.DIGEST_DIR, when.strftime("%Y-%m-%d") + ".md")
-    with open(path, "w", encoding="utf-8") as fh:
+    mode = "a" if os.path.exists(path) else "w"
+    with open(path, mode, encoding="utf-8") as fh:
+        if mode == "a":
+            fh.write("\n\n")
         fh.write(text)
     return path
