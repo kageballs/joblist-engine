@@ -233,3 +233,33 @@ def test_funnel_counts_and_near_misses(profile):
     # Role dies latest in the chain, so it is the more informative near miss.
     assert funnel.near_misses(1)[0].rejected_by == "role"
     assert "3 fetched" in funnel.line()
+
+
+# -- empty include list ---------------------------------------------------
+
+def _no_include(profile):
+    return targeting.Profile(**{**profile.__dict__, "role_include": ()})
+
+
+def test_empty_include_list_passes_any_title(profile):
+    """`include: []` means "let the scorer rank", not "reject everything".
+
+    This is the live configuration: once earlier stages cut the pool to a few
+    dozen a day, title regexes cost more in missed matches than they save in
+    tokens.
+    """
+    loose = _no_include(profile)
+    for title in [
+        "Conversational AI & Voice AI Specialist",
+        "Senior Design Engineer, AI Platforms",
+        "Staff / Principal Cryptographer (IC)",
+        "Data Entry Specialist",
+    ]:
+        assert filters.evaluate(make_job(title=title), loose, NOW).passed, title
+
+
+def test_exclude_still_applies_without_include(profile):
+    """Excludes are independent of includes — the impossible stays impossible."""
+    loose = _no_include(profile)
+    verdict = filters.evaluate(make_job(title="Backend Engineering Intern"), loose, NOW)
+    assert verdict.rejected_by == "role"

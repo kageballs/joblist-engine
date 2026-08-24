@@ -37,6 +37,14 @@ rate:
   absolute_floor_hourly_usd: 30
 
 roles:
+  # An include list is a tradeoff, not a default. It saves tokens, but a regex
+  # is worst at exactly what a human reads a title for: an "AI Engineer" list
+  # will happily discard "Conversational AI & Voice AI Specialist".
+  #
+  # Count how many jobs actually reach this stage before you rely on it. If
+  # the earlier stages already cut the pool to a few dozen a day, set
+  # `include: []`, keep only the impossible in `exclude`, and let the scorer
+  # rank. It reads titles better than you can pattern-match them.
   include:
     - backend
     - full.?stack
