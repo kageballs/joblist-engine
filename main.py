@@ -1,150 +1,198 @@
 #!/usr/bin/env python3
-"""
-JobList - Onlinejobs.ph AI/Automation Job Matcher
+"""joblist — find the remote jobs that will actually hire you, and pay.
 
 Usage:
-    python main.py                # Full run: scrape, match, save seen IDs, print JSON
-    python main.py --dry-run      # Scrape and match but do NOT update seen_jobs.json
-    python main.py --init-resume  # Extract PDFs -> data/resume.md (run once to bootstrap)
-    python main.py --help         # Show this help
+    py main.py                  fetch, filter, score, write today's digest
+    py main.py --dry-run        run everything, persist nothing
+    py main.py --no-llm         deterministic filters only; no API key needed
+    py main.py --explain        print the funnel and every rejection reason
+    py main.py --since 72h      override the watermark
+    py main.py --json           also print results as JSON on stdout
+    py main.py --fast           score with the cheaper model
 
-Resume workflow:
-    1. Drop Resume_2026.pdf and "Past Projects _2026.pdf" into data/
-    2. Run: python main.py --init-resume
-       -> Creates data/resume.md with all content extracted from the PDFs
-    3. Edit data/resume.md freely to add/update skills and experience
-    4. Run: python main.py --dry-run  to test matching
-    5. Daily runs always read from data/resume.md (not the PDFs)
-
-Output:
-    Prints a JSON array of matched jobs to stdout.
-    The scheduled Claude Code agent reads this output and emails it via Gmail MCP.
+Progress goes to stderr, results to stdout, the digest to data/digest/.
 """
 
-import sys
+from __future__ import annotations
+
+import argparse
 import json
 import os
-from datetime import date
+import re
+import sys
+from datetime import UTC, datetime, timedelta
 
-from config import (
-    DATA_DIR, RESUME_MD_PATH, RESUME_PDF_PATH, PROJECTS_PDF_PATH,
-    SEEN_JOBS_PATH, MATCH_THRESHOLD, RECIPIENT_EMAIL,
-)
-
-
-def _ensure_data_files() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.exists(SEEN_JOBS_PATH):
-        with open(SEEN_JOBS_PATH, "w") as f:
-            json.dump([], f)
+import config
+import digest as digest_mod
+import filters
+import targeting
+from sources.himalayas import Himalayas
+from store import Store
 
 
-def _extract_pdf_text(path: str) -> str:
-    try:
-        import pdfplumber
-    except ImportError:
-        print("[main] pdfplumber not installed. Run: pip install pdfplumber", file=sys.stderr)
-        return ""
-    if not os.path.exists(path):
-        return ""
-    with pdfplumber.open(path) as pdf:
-        return "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
+def parse_since(text: str) -> timedelta:
+    match = re.fullmatch(r"(\d+)\s*([hdw])", text.strip(), re.I)
+    if not match:
+        raise argparse.ArgumentTypeError("use forms like 24h, 7d, 2w")
+    n, unit = int(match.group(1)), match.group(2).lower()
+    return {"h": timedelta(hours=n), "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
 
 
-def init_resume() -> None:
-    """Extract content from PDFs and write data/resume.md for ongoing editing."""
-    sections: list[str] = []
-
-    resume_text = _extract_pdf_text(RESUME_PDF_PATH)
-    if resume_text:
-        sections.append("## Resume\n\n" + resume_text)
-        print(f"[init] Extracted resume from {RESUME_PDF_PATH}", file=sys.stderr)
-    else:
-        print(f"[init] WARNING: {RESUME_PDF_PATH} not found or empty", file=sys.stderr)
-
-    projects_text = _extract_pdf_text(PROJECTS_PDF_PATH)
-    if projects_text:
-        sections.append("## Past Projects\n\n" + projects_text)
-        print(f"[init] Extracted past projects from {PROJECTS_PDF_PATH}", file=sys.stderr)
-    else:
-        print(f"[init] WARNING: {PROJECTS_PDF_PATH} not found or empty", file=sys.stderr)
-
-    if not sections:
-        print("[init] ERROR: No PDF content found. Place PDFs in data/ and retry.", file=sys.stderr)
-        sys.exit(1)
-
-    header = (
-        "# My Resume & Skills\n\n"
-        "> Edit this file freely to add, remove, or update skills and experience.\n"
-        "> This file is what the job matcher reads — the PDFs are no longer needed after init.\n\n"
-    )
-    content = header + "\n\n---\n\n".join(sections)
-
-    with open(RESUME_MD_PATH, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    print(f"[init] Created {RESUME_MD_PATH} ({len(content)} chars)", file=sys.stderr)
-    print(f"[init] Edit this file to update your skills, then run: python main.py --dry-run", file=sys.stderr)
+def load_api_key() -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if key:
+        return key
+    if os.path.exists(".env"):
+        with open(".env", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("ANTHROPIC_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip("\"'")
+    return ""
 
 
-def _load_resume() -> str:
-    if not os.path.exists(RESUME_MD_PATH):
-        print(
-            f"[ERROR] {RESUME_MD_PATH} not found.\n"
-            "Run first: python main.py --init-resume",
-            file=sys.stderr,
-        )
-        return ""
-    with open(RESUME_MD_PATH, "r", encoding="utf-8") as f:
-        return f.read().strip()
+def _force_utf8() -> None:
+    """Windows consoles default to cp1252 and raise on the digest's symbols."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
-def _print_summary(matches: list[dict]) -> None:
-    today = date.today().isoformat()
-    print(f"\n{'='*60}", file=sys.stderr)
-    print(f"  JobBot Daily Run - {today}", file=sys.stderr)
-    print(f"  High-probability matches (score >= {MATCH_THRESHOLD}): {len(matches)}", file=sys.stderr)
-    print(f"  Recipient: {RECIPIENT_EMAIL}", file=sys.stderr)
-    print(f"{'='*60}", file=sys.stderr)
-    for i, m in enumerate(matches, 1):
-        print(f"  {i}. [{m.get('score', 0):3d}] {m.get('title', 'N/A')}", file=sys.stderr)
-        if m.get("salary"):
-            print(f"      Salary : {m['salary']}", file=sys.stderr)
-        print(f"      Link   : {m.get('url', 'N/A')}", file=sys.stderr)
-    print(f"{'='*60}\n", file=sys.stderr)
+def log(message: str) -> None:
+    print(message, file=sys.stderr)
 
 
-def main() -> None:
-    dry_run = "--dry-run" in sys.argv
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-llm", action="store_true")
+    parser.add_argument("--explain", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--fast", action="store_true")
+    parser.add_argument("--since", type=parse_since, default=None)
+    parser.add_argument("--profile", default=config.PROFILE_PATH)
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args()
+    _force_utf8()
 
-    if "--help" in sys.argv or "-h" in sys.argv:
+    if args.help:
         print(__doc__)
-        sys.exit(0)
+        return 0
 
-    if "--init-resume" in sys.argv:
-        _ensure_data_files()
-        init_resume()
-        sys.exit(0)
+    try:
+        profile = targeting.load(args.profile)
+    except targeting.ProfileError as exc:
+        log("[error] " + str(exc))
+        return 1
 
-    _ensure_data_files()
+    if not profile.resume and not args.no_llm:
+        log(
+            f"[warn] {profile.resume_path} is empty or missing — scoring will be weak.\n"
+            "       For this repo it is generated by: cd data/cv && node build.js"
+        )
 
-    resume_text = _load_resume()
-    if not resume_text:
-        sys.exit(1)
+    started_at = datetime.now(UTC)
+    store = Store()
+    run_id = store.start_run()
+    since = started_at - args.since if args.since else store.since()
+    log(f"[run] profile={profile.name} since={since:%Y-%m-%d %H:%M}Z")
 
-    from agents import orchestrator
+    funnel = filters.Funnel()
+    source = Himalayas()
+    fresh: list[filters.Verdict] = []
 
-    print("[main] Starting job search agent...", file=sys.stderr)
-    matches = orchestrator.run(resume_text, dry_run=dry_run)
+    try:
+        for job in source.fetch(since):
+            funnel.fetched += 1
+            if store.seen(job.key):
+                funnel.seen_skipped += 1
+                continue
+            verdict = filters.evaluate(job, profile, started_at)
+            funnel.add(verdict)
+            if verdict.passed:
+                fresh.append(verdict)
+    except Exception as exc:  # noqa: BLE001 - the run record must capture why
+        store.finish_run(run_id, ok=False, fetched=funnel.fetched, error=str(exc))
+        store.close()
+        log(f"[error] fetch failed: {exc}")
+        return 1
 
-    _print_summary(matches)
+    log(f"[run] {funnel.line()} ({source.pages_fetched} pages)")
+    if source.hit_page_cap:
+        log(
+            f"[warn] stopped at the {config.HIMALAYAS_MAX_PAGES}-page cap before reaching {since:%Y-%m-%d %H:%M}Z — "
+            "older jobs in this window were NOT seen. Raise HIMALAYAS_MAX_PAGES "
+            "or run more often."
+        )
 
-    if dry_run:
-        print("[main] Dry-run mode - seen_jobs.json was NOT updated.", file=sys.stderr)
+    if args.explain:
+        for verdict in funnel.rejects:
+            log(f"  [{verdict.rejected_by}] {verdict.job.title[:52]} — {verdict.reason}")
 
-    # Output JSON to stdout for the scheduled Claude Code agent to consume
-    print(json.dumps(matches, indent=2))
+    results: list[dict] = []
+    model_used = "none"
+    if fresh and not args.no_llm:
+        api_key = load_api_key()
+        if not api_key:
+            log("[error] no ANTHROPIC_API_KEY (env or .env). Use --no-llm to skip scoring.")
+            store.finish_run(run_id, ok=False, fetched=funnel.fetched, error="no api key")
+            store.close()
+            return 1
+        import scorer
+
+        model_used = config.FAST_MODEL if args.fast else config.SCORING_MODEL
+        results = scorer.score(fresh, profile, api_key, model=model_used)
+    else:
+        results = [
+            {"i": i, "score": None, "verdict": "unscored", "why": "",
+             "matched_skills": [], "concerns": [], "cv_variant": "engineering"}
+            for i in range(len(fresh))
+        ]
+
+    # scorer.score() pads to len(fresh), so a length mismatch is a real bug.
+    pairs = list(zip(fresh, results, strict=True))
+
+    text = digest_mod.render(funnel, pairs, profile, model_used, started_at, no_llm=args.no_llm)
+
+    if args.dry_run:
+        log("[run] dry-run: nothing persisted")
+        print(text)
+    else:
+        path = digest_mod.write(text, started_at)
+        log(f"[run] digest -> {path}")
+        for verdict, result in pairs:
+            store.record_job(
+                verdict.job, run_id, verdict.salary_signal,
+                score=result.get("score"), verdict=result.get("verdict"),
+                why=result.get("why"), cv_variant=result.get("cv_variant"),
+            )
+        for verdict in funnel.rejects:
+            store.record_reject(verdict, run_id)
+        store.commit()
+        store.finish_run(
+            run_id, ok=True, fetched=funnel.fetched, scored=len(pairs),
+            funnel=funnel.line(), model=model_used,
+        )
+
+    if args.json:
+        print(json.dumps(
+            [
+                {
+                    "uid": v.job.key, "title": v.job.title, "company": v.job.company,
+                    "url": v.job.url, "regions": list(v.job.location_restrictions),
+                    "salary_signal": v.salary_signal, **r,
+                }
+                for v, r in pairs
+            ],
+            indent=2,
+        ))
+
+    store.close()
+    above = sum(1 for _, r in pairs if (r.get("score") or 0) >= profile.display_threshold)
+    log(f"[run] done — {len(pairs)} scored, {above} above {profile.display_threshold}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
