@@ -1,0 +1,25 @@
+name: live
+
+# Upstream drift is the failure mode that matters: Himalayas deprecated its
+# `offset` parameter with no notice. This catches a changed feed before the
+# morning run does. No secrets — --no-llm needs no API key, which is the whole
+# point of that mode.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q -m live
+      - name: end-to-end against the live feed, no API key
+        run: |
+          cp profile.example.yaml profile.yaml
+          python main.py --no-llm --dry-run --since 24h
