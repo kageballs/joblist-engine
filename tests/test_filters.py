@@ -65,10 +65,12 @@ def test_mixed_restrictions_pass_if_any_admits_us(profile):
 
 
 def test_own_country_only_passes_but_is_flagged(profile):
-    """Restricted to the user's own country is a downgrade signal, not a reject.
+    """Restricted to the user's own country passes, and is recorded.
 
-    Measured on Himalayas: the only such listing in a 300-job sample was a BPO.
-    It still passes so the scorer can see it and mark it down.
+    It was marked down until 2026-08-24, on the basis that the only such
+    listing in a 300-job Himalayas sample was a BPO. Now neutral: while the
+    goal is work soon, home-country eligibility is often the fastest yes.
+    The flag is still set so the digest can note it.
     """
     verdict = filters.evaluate(
         make_job(location_restrictions=("Nigeria",)), profile, NOW
