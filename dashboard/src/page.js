@@ -2,6 +2,19 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+// A job's url is `applicationLink` straight off the Himalayas feed, so its
+// scheme is employer-controlled. esc() escapes HTML entities and therefore does
+// nothing to `javascript:` in an href -- that would run in this origin the
+// moment Apply is clicked. Anything that is not http(s) is not a link.
+const safeUrl = (u) => {
+  try {
+    const parsed = new URL(String(u));
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+};
+
 const STATES = ["new", "interested", "applied", "passed"];
 const LABEL = { new: "New", interested: "Interested", applied: "Applied", passed: "Passed" };
 // salary_signal is filters.py's tri-state enum; "unknown" is the common case and
@@ -91,6 +104,7 @@ function card(job) {
   const region = regionText(job.regions);
   const salary = SALARY[job.salary_signal] || null;
   const moves = STATES.filter((s) => s !== job.state && s !== "new");
+  const applyUrl = safeUrl(job.url);
   return `<article class="card" data-uid="${esc(job.uid)}">
 <div class="top">
   <div class="score ${band(job.score)}">${job.score ?? "&ndash;"}</div>
@@ -108,7 +122,8 @@ function card(job) {
 </div>
 ${job.why ? `<p class="why">${esc(job.why)}</p>` : ""}
 <div class="acts">
-  ${job.url ? `<a class="apply" href="${esc(job.url)}" target="_blank" rel="noopener noreferrer">Apply &rarr;</a>` : ""}
+  ${applyUrl ? `<a class="apply" href="${esc(applyUrl)}" target="_blank" rel="noopener noreferrer">Apply &rarr;</a>` : ""}
+  ${!applyUrl && job.url ? `<span class="tag">link rejected</span>` : ""}
   ${moves.map((s) => `<button data-to="${s}">${LABEL[s]}</button>`).join("")}
   ${job.state !== "new" ? `<button data-to="new">Reset</button>` : ""}
 </div></article>`;
