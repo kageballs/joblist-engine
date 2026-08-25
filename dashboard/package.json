@@ -1,0 +1,13 @@
+{
+  "name": "joblist-dashboard",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "init-local": "wrangler d1 execute joblist --local --file=./schema.sql",
+    "init-remote": "wrangler d1 execute joblist --remote --file=./schema.sql",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.125.0"
+  }
+}

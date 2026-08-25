@@ -1,0 +1,27 @@
+name = "joblist"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Set to false if this is ever put behind Cloudflare Access on a custom
+# hostname — otherwise the *.workers.dev URL stays an open back door.
+workers_dev = true
+
+# Off by default here: every deployed version otherwise gets its own public
+# <version>-joblist.workers.dev hostname, widening the surface for no gain.
+preview_urls = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "joblist"
+# Replaced by the real id after: npx wrangler d1 create joblist
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[vars]
+SESSION_DAYS = "60"
+MAX_LOGIN_FAILS = "8"
+LOGIN_WINDOW_MIN = "15"
+
+# Secrets (never in this file — set with `npx wrangler secret put <NAME>`):
+#   DASH_PASSWORD  the password typed into the login form
+#   COOKIE_SECRET  HMAC key; rotating it invalidates every session immediately
+#   INGEST_TOKEN   bearer token used by ../push.py
