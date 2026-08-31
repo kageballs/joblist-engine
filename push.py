@@ -7,6 +7,10 @@ the dashboard (see CLAUDE.md, "Privacy split").
     py push.py                # push everything scored
     py push.py --since 7d     # only jobs first seen in the last 7 days
     py push.py --dry-run      # print what would go, send nothing
+
+Two tables go up: `jobs`, and the `job_requirements` behind the Improve tab.
+Requirements are the employers' demands, not a record of who was filtered out,
+so they carry none of the inference risk that keeps `rejects` local.
 """
 from __future__ import annotations
 
@@ -25,6 +29,10 @@ import config
 FIELDS = (
     "uid", "source", "title", "company", "url", "posted_at",
     "regions", "salary_signal", "score", "verdict", "why", "cv_variant",
+    # `score` is already the penalised figure; `score_raw` is what the model
+    # said before it, so a card can show the arithmetic rather than a number
+    # that looks like a bad review of the work.
+    "score_raw", "blockers",
 )
 CHUNK = 200
 
@@ -52,6 +60,30 @@ def parse_since(text: str) -> timedelta:
     raise ValueError(f"unrecognised --since {text!r}; use e.g. 24h or 7d")
 
 
+def collect_requirements(uids: list[str]) -> list[dict]:
+    """Requirement rows for the jobs being pushed, and only those.
+
+    Scoped to the same uids rather than the whole table so a `--since` push
+    cannot ship rows whose parent job the dashboard has never seen -- those
+    would count toward the tally while being un-drillable.
+    """
+    if not uids:
+        return []
+    db = Path(config.DB_PATH)
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    rows = []
+    # SQLite caps host parameters, so chunk the IN list.
+    for start in range(0, len(uids), 400):
+        window = uids[start:start + 400]
+        marks = ",".join("?" * len(window))
+        rows += [dict(r) for r in conn.execute(
+            f"SELECT uid, kind, mandatory, detail, blocking FROM job_requirements"
+            f" WHERE uid IN ({marks})", window)]
+    conn.close()
+    return rows
+
+
 def collect(since: timedelta | None) -> list[dict]:
     db = Path(config.DB_PATH) if hasattr(config, "DB_PATH") else Path("data/joblist.sqlite3")
     if not db.exists():
@@ -68,9 +100,9 @@ def collect(since: timedelta | None) -> list[dict]:
     return rows
 
 
-def post(url: str, token: str, batch: list[dict]) -> dict:
+def post(url: str, token: str, batch: list[dict], path: str = "/ingest") -> dict:
     request = urllib.request.Request(
-        url.rstrip("/") + "/ingest",
+        url.rstrip("/") + path,
         data=json.dumps(batch).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
@@ -109,17 +141,24 @@ def main() -> int:
     if not args.url or not token:
         sys.exit("set DASHBOARD_URL and INGEST_TOKEN in .env (or pass --url)")
 
-    sent = 0
-    for start in range(0, len(jobs), CHUNK):
-        chunk = jobs[start:start + CHUNK]
-        try:
-            result = post(args.url, token, chunk)
-        except urllib.error.HTTPError as exc:
-            sys.exit(f"push failed ({exc.code}): {exc.read().decode('utf-8', 'replace')[:200]}")
-        except urllib.error.URLError as exc:
-            sys.exit(f"push failed: {exc.reason}")
-        sent += result.get("received", 0)
-    print(f"pushed {sent} job(s) to {args.url}")
+    def send(rows: list[dict], path: str, label: str) -> int:
+        sent = 0
+        for start in range(0, len(rows), CHUNK):
+            chunk = rows[start:start + CHUNK]
+            try:
+                result = post(args.url, token, chunk, path)
+            except urllib.error.HTTPError as exc:
+                sys.exit(f"{label} push failed ({exc.code}): "
+                         f"{exc.read().decode('utf-8', 'replace')[:200]}")
+            except urllib.error.URLError as exc:
+                sys.exit(f"{label} push failed: {exc.reason}")
+            sent += result.get("received", 0)
+        return sent
+
+    sent = send(jobs, "/ingest", "jobs")
+    reqs = collect_requirements([j["uid"] for j in jobs])
+    sent_reqs = send(reqs, "/ingest/requirements", "requirements") if reqs else 0
+    print(f"pushed {sent} job(s) and {sent_reqs} requirement row(s) to {args.url}")
     return 0
 
 

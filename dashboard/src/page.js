@@ -32,11 +32,23 @@ header{position:sticky;top:0;background:rgba(15,17,21,.94);
 backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:.75rem 1rem;z-index:10}
 h1{margin:0;font-size:1rem;letter-spacing:.02em}
 h1 span{color:var(--dim);font-weight:400}
-nav{display:flex;gap:.35rem;margin-top:.6rem;overflow-x:auto;-webkit-overflow-scrolling:touch}
+nav{display:flex;gap:.35rem;margin-top:.55rem;overflow-x:auto;-webkit-overflow-scrolling:touch}
 nav a{flex:0 0 auto;padding:.35rem .7rem;border-radius:999px;text-decoration:none;
 color:var(--dim);background:var(--card);border:1px solid var(--line);font-size:.82rem;white-space:nowrap}
 nav a.on{color:var(--bg);background:var(--fg);border-color:var(--fg);font-weight:600}
 nav a b{font-weight:600}
+/* Board tabs: the outer axis. Underlined tabs rather than pills so they read
+   as the frame the pills below sit inside, not as a second row of filters. */
+nav.src{display:flex;gap:.1rem;margin-top:.55rem;border-bottom:1px solid var(--line);
+overflow-x:auto;-webkit-overflow-scrolling:touch}
+nav.src a{flex:0 0 auto;padding:.4rem .8rem;border:0;background:none;border-radius:0;
+color:var(--dim);font-size:.9rem;white-space:nowrap;text-decoration:none;
+border-bottom:2px solid transparent;margin-bottom:-1px}
+nav.src a:hover{color:var(--fg)}
+nav.src a.on{color:var(--fg);background:none;border-bottom-color:var(--accent);font-weight:600}
+nav.src a b{font-weight:500;opacity:.55;margin-left:.15rem}
+p.scope{margin:0 0 .7rem;font-size:.76rem;color:var(--dim)}
+p.scope b{color:var(--fg);font-weight:600}
 main{padding:.75rem;max-width:44rem;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
 padding:.8rem;margin-bottom:.7rem}
@@ -54,6 +66,30 @@ place-items:center;font-weight:700;font-size:1.05rem;background:#20242e}
 .tag.src{background:#1d2a3d;color:#8fb8ff}
 .tag.cv{background:#2a2333;color:#c9a7ff}
 .why{margin:.55rem 0 0;font-size:.86rem;color:var(--dim)}
+/* Muted, not alarming. These are real jobs you simply cannot apply to as
+   written, not errors, and the card stays fully readable. */
+.card.blocked{border-color:#4a3630}
+.blk{margin:.55rem 0 0;font-size:.78rem;color:#e0a07a;background:#2a1f1a;
+border-radius:6px;padding:.3rem .5rem}
+.blk b{color:#f2c4a4;font-weight:600}
+nav a.alt{margin-left:auto;background:none;border-color:transparent;color:var(--accent)}
+nav a.alt:hover{border-color:var(--line)}
+.imph{font-size:.8rem;font-weight:600;color:var(--fg);margin:1.2rem 0 .6rem;
+text-transform:uppercase;letter-spacing:.04em}
+.imph span{text-transform:none;letter-spacing:0;font-weight:400;color:var(--dim)}
+.imp{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:.8rem;margin-bottom:.6rem}
+.imp.on{border-color:#4a3630}
+.impt{display:flex;gap:.6rem;align-items:flex-start}
+.impn{flex:0 0 auto;width:2.6rem;height:2.6rem;border-radius:8px;display:grid;
+place-items:center;font-weight:700;font-size:1.05rem;background:#20242e;color:var(--dim)}
+.imp.on .impn{color:#f2c4a4;box-shadow:inset 0 0 0 1px #6b4a3a}
+.impbar{height:4px;background:#20242e;border-radius:3px;margin-top:.6rem;overflow:hidden}
+.impbar i{display:block;height:100%;background:var(--dim);border-radius:3px}
+.imp.on .impbar i{background:#c47a4e}
+.impeg{margin:.55rem 0 0;padding-left:1rem;font-size:.79rem;color:var(--dim)}
+.impeg li{margin:.15rem 0}
+code{font-size:.9em;color:var(--dim)}
 .acts{display:flex;gap:.4rem;margin-top:.7rem;flex-wrap:wrap}
 button,.apply{font:inherit;font-size:.82rem;padding:.4rem .7rem;border-radius:6px;
 border:1px solid var(--line);background:#20242e;color:var(--fg);cursor:pointer;
@@ -100,12 +136,36 @@ function regionText(raw) {
   return list.join(", ");
 }
 
+// A requirement key -> the short phrase a card has room for. Mirrors
+// config.REQUIREMENT_KINDS on the Python side; an unmapped key falls back to
+// the raw key rather than vanishing, so a new kind is visible before it is
+// pretty.
+const BLOCKER_LABEL = {
+  work_samples: "work samples", public_code: "public code",
+  video_intro: "video intro", test_task: "test task", timed_trial: "trial period",
+  certification: "certification", degree: "degree", years_experience: "years of experience",
+  references: "references", named_clients: "named clients", own_tooling: "own tooling",
+  equipment: "equipment", time_tracker: "time tracker",
+  background_check: "background check", id_verification: "ID verification",
+  language_other: "another language", onsite_presence: "on-site presence",
+};
+
+function blockerList(raw) {
+  let list;
+  try { list = JSON.parse(raw || "[]"); } catch { return []; }
+  return Array.isArray(list) ? list.map((k) => BLOCKER_LABEL[k] || k) : [];
+}
+
 function card(job) {
   const region = regionText(job.regions);
   const salary = SALARY[job.salary_signal] || null;
   const moves = STATES.filter((s) => s !== job.state && s !== "new");
   const applyUrl = safeUrl(job.url);
-  return `<article class="card" data-uid="${esc(job.uid)}">
+  const blocked = blockerList(job.blockers);
+  // Show the arithmetic. A silently docked score reads as the model rating the
+  // work poorly, when the work may be a fine match you simply cannot apply to.
+  const docked = blocked.length && job.score_raw != null && job.score_raw !== job.score;
+  return `<article class="card${blocked.length ? " blocked" : ""}" data-uid="${esc(job.uid)}">
 <div class="top">
   <div class="score ${band(job.score)}">${job.score ?? "&ndash;"}</div>
   <div>
@@ -113,6 +173,8 @@ function card(job) {
     <div class="co">${esc(job.company || "unknown company")}</div>
   </div>
 </div>
+${blocked.length ? `<p class="blk">Requires what you cannot supply: <b>${esc(blocked.join(", "))}</b>${
+  docked ? ` &middot; scored ${esc(String(job.score_raw))} before this` : ""}</p>` : ""}
 <div class="tags">
   <span class="tag src">${esc(job.source)}</span>
   ${region ? `<span class="tag">${esc(region)}</span>` : ""}
@@ -149,17 +211,130 @@ document.addEventListener('click', async (e) => {
   }
 });`;
 
-export function renderList(jobs, tab, counts) {
+// Shared header chrome, so the Improve view sits inside the same board tabs as
+// the list rather than becoming a page that loses your place.
+function chrome(q, sources, source, stateRow, view) {
+  const boardTabs = sources.length > 1
+    ? `<nav class="src">` +
+      `<a href="${q({ view })}" class="${source ? "" : "on"}">All</a>` +
+      sources.map((s) =>
+        `<a href="${q({ view, src: s.source })}" class="${s.source === source ? "on" : ""}">` +
+        `${esc(s.source)} <b>${s.n}</b></a>`).join("") + `</nav>`
+    : "";
+  return `<header>
+<h1>joblist <span>&middot; triage</span></h1>
+${boardTabs}${stateRow}</header>`;
+}
+
+export function renderImprove(kinds, samples, sources, source, scored, covered) {
+  const q = (params) => {
+    const path = params.view === "improve" ? "/improve" : "/";
+    const qs = Object.entries(params).filter(([k, v]) => v && k !== "view")
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+    return qs ? `${path}?${qs}` : path;
+  };
+
+  const stateRow = `<nav><a href="${q({ src: source })}">&larr; Jobs</a>` +
+    `<a href="${q({ view: "improve", src: source })}" class="on">To improve</a></nav>`;
+
+  // Split, not sorted. The things that cost you a listing today are a different
+  // kind of item from the things that merely came up, and burying the first
+  // group inside a single frequency ranking is what makes a backlog unreadable.
+  const blocking = kinds.filter((k) => k.blocking);
+  const others = kinds.filter((k) => !k.blocking);
+  const top = Math.max(1, ...kinds.map((k) => k.listings));
+
+  const row = (k) => {
+    const pct = scored ? Math.round((k.listings / scored) * 100) : 0;
+    const eg = (samples[k.kind] || []).slice(0, 2);
+    return `<article class="imp${k.blocking ? " on" : ""}">
+<div class="impt">
+  <div class="impn">${k.listings}</div>
+  <div>
+    <div class="ttl">${esc(BLOCKER_LABEL[k.kind] || k.kind)}</div>
+    <div class="co">${k.must} of ${k.listings} made it a condition &middot; ${pct}% of all listings</div>
+  </div>
+</div>
+<div class="impbar"><i style="width:${Math.round((k.listings / top) * 100)}%"></i></div>
+${eg.length ? `<ul class="impeg">${eg.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
+</article>`;
+  };
+
+  const scope = source ? ` on <b>${esc(source)}</b>` : "";
+  const body = kinds.length
+    ? (blocking.length
+        ? `<h2 class="imph">Blocking you<span> &mdash; asked as a condition, and flagged as something you cannot supply</span></h2>`
+          + blocking.map(row).join("")
+        : `<p class="scope">Nothing you have flagged is currently being demanded.</p>`)
+      + (others.length
+        ? `<h2 class="imph">Also asked for<span> &mdash; you are not blocked on these, but they keep coming up</span></h2>`
+          + others.map(row).join("")
+        : "")
+    : `<p class="empty">No requirements recorded yet${scope}.</p>`;
+
+  return shell("joblist — to improve", chrome(q, sources, source, stateRow, "improve") +
+`<main><p class="scope">${covered} of ${scored} listings${scope} asked for something to be produced.
+One row per requirement, counted once per listing.</p>
+${body}</main>
+<footer>Flagged items come from <code>deliverables.cannot_provide</code> in profile.yaml
+&middot; <a href="/logout" style="color:inherit">sign out</a></footer>`);
+}
+
+export function renderList(jobs, tab, counts, sources = [], source = null) {
+  const q = (params) =>
+    "/?" + Object.entries(params).filter(([, v]) => v).map(([k, v]) =>
+      `${k}=${encodeURIComponent(v)}`).join("&");
+
+  // Platform is the OUTER axis, state the inner one, and that order is the
+  // point rather than a layout preference. A score is only meaningful against
+  // the board it was given on: onlinejobs.ph tops out around $25/hr while
+  // himalayas routinely clears $45, so a 78 on one is not a 78 on the other.
+  // Ranking a mixed list by score therefore compares numbers that were never
+  // on the same scale. Each tab is one board, ranked within itself.
+  const boardTabs = sources.length > 1
+    ? `<nav class="src">` +
+      `<a href="${q({ tab })}" class="${source ? "" : "on"}">All <b>${counts.allTotal || 0}</b></a>` +
+      sources.map((s) =>
+        `<a href="${q({ tab, src: s.source })}" class="${s.source === source ? "on" : ""}">` +
+        `${esc(s.source)} <b>${s.n}</b></a>`).join("") + `</nav>`
+    : "";
+
   const tabs = STATES.map((s) =>
-    `<a href="/?tab=${s}" class="${s === tab ? "on" : ""}">${LABEL[s]} <b>${counts[s] || 0}</b></a>`,
-  ).join("");
+    `<a href="${q({ tab: s, src: source })}" class="${s === tab ? "on" : ""}">` +
+    `${LABEL[s]} <b>${counts[s] || 0}</b></a>`,
+  ).join("") +
+    // Not a triage state, so it is set apart rather than lined up with them --
+    // it changes what you are looking at, not which pile you are looking in.
+    `<a class="alt" href="${"/improve" + (source ? `?src=${encodeURIComponent(source)}` : "")}">To improve</a>`;
+
+  // Say what the ranking is relative to. Without this the "All" view silently
+  // interleaves two incomparable scales and reads as one ranked list.
+  //
+  // Also say so when the query's LIMIT cut the tail off. Picking a board keeps
+  // each list well under it, but "All" can exceed it, and a truncated list that
+  // claims the tab's full count is a quiet lie about what you have triaged.
+  const shown = jobs.length;
+  const total = counts[tab] || shown;
+  const count = shown < total
+    ? `showing top <b>${shown}</b> of ${total} ${esc(LABEL[tab]).toLowerCase()}`
+    : `${shown} ${esc(LABEL[tab]).toLowerCase()}`;
+  const caption = shown
+    ? `<p class="scope">${count} · ranked by score` +
+      (source
+        ? ` within <b>${esc(source)}</b>`
+        : `, <b>across all boards — scores are not comparable between them</b>`) +
+      `</p>`
+    : "";
+
+  const scope = source ? ` in ${esc(source)}` : "";
   const body = jobs.length
     ? jobs.map(card).join("")
-    : `<p class="empty">Nothing in ${esc(LABEL[tab])}.</p>`;
-  return shell(`joblist — ${LABEL[tab]}`, `<header>
+    : `<p class="empty">Nothing in ${esc(LABEL[tab])}${scope}.</p>`;
+  const title = source ? `joblist — ${esc(source)} · ${LABEL[tab]}` : `joblist — ${LABEL[tab]}`;
+  return shell(title, `<header>
 <h1>joblist <span>&middot; triage</span></h1>
-<nav>${tabs}</nav></header>
-<main>${body}</main>
-<footer>${counts.total || 0} scored jobs &middot; <a href="/logout" style="color:inherit">sign out</a></footer>
+${boardTabs}<nav>${tabs}</nav></header>
+<main>${caption}${body}</main>
+<footer>${counts.total || 0} scored jobs${scope} &middot; <a href="/logout" style="color:inherit">sign out</a></footer>
 <script>${SCRIPT}</script>`);
 }

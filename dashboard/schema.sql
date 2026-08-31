@@ -19,6 +19,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   verdict          TEXT,
   why              TEXT,
   cv_variant       TEXT,
+  -- What the model scored before the local blocker penalty. Kept so a card can
+  -- show "40 (was 70)" rather than a number that reads as a bad review of the
+  -- work, when the work is fine and the application is simply not possible.
+  score_raw        INTEGER,
+  blockers         TEXT,            -- JSON array of requirement kinds
   first_seen       TEXT NOT NULL,
   -- triage state is owned by the dashboard, never by ingest
   state            TEXT NOT NULL DEFAULT 'new',   -- new | interested | applied | passed
@@ -27,6 +32,25 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state_score ON jobs(state, score DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score DESC);
+
+-- What each posting asked the applicant to PRODUCE. Mirrors the local table.
+--
+-- Safe to publish, unlike `rejects`: these are the employers' demands, not a
+-- record of who was filtered out and why. `blocking` is the one personal bit --
+-- it says a requirement is one the candidate cannot meet -- and that is already
+-- implied by jobs.blockers, on a dashboard only they can sign into.
+--
+-- (uid, kind) is the primary key, so a listing can never contribute two rows
+-- for the same requirement and the tally cannot double-count.
+CREATE TABLE IF NOT EXISTS job_requirements (
+  uid        TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  mandatory  INTEGER NOT NULL DEFAULT 0,
+  detail     TEXT,
+  blocking   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (uid, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_jobreq_kind ON job_requirements(kind);
 
 -- login throttling: one row per client IP, reset on success or window expiry
 CREATE TABLE IF NOT EXISTS login_attempts (

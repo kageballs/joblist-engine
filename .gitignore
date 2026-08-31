@@ -19,3 +19,8 @@ venv/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# Wrangler local state and the dashboard's installed deps. Both are rebuildable
+# and neither belongs in the repo.
+.wrangler/
+dashboard/node_modules/
