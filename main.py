@@ -7,6 +7,8 @@ Usage:
     py main.py --no-llm         deterministic filters only; no API key needed
     py main.py --explain        print the funnel and every rejection reason
     py main.py --since 72h      override the watermark
+    py main.py --source onlinejobs   run one source only
+    py main.py --rescore        re-evaluate already-seen jobs in the window
     py main.py --json           also print results as JSON on stdout
     py main.py --fast           score with the cheaper model
 
@@ -22,11 +24,13 @@ import re
 import sys
 from datetime import UTC, datetime, timedelta
 
+import blockers as blockers_mod
 import config
 import digest as digest_mod
 import filters
 import targeting
 from sources.himalayas import Himalayas
+from sources.onlinejobs import OnlineJobs
 from store import Store
 
 
@@ -71,6 +75,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--since", type=parse_since, default=None)
+    parser.add_argument("--source", default=None,
+                        help="run only this source (himalayas | onlinejobs)")
+    parser.add_argument("--rescore", action="store_true",
+                        help="re-evaluate jobs already marked seen (costs tokens)")
     parser.add_argument("--profile", default=config.PROFILE_PATH)
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
@@ -99,32 +107,82 @@ def main() -> int:
     log(f"[run] profile={profile.name} since={since:%Y-%m-%d %H:%M}Z")
 
     funnel = filters.Funnel()
-    source = Himalayas()
     fresh: list[filters.Verdict] = []
 
-    try:
-        for job in source.fetch(since):
-            funnel.fetched += 1
-            if store.seen(job.key):
-                funnel.seen_skipped += 1
-                continue
-            verdict = filters.evaluate(job, profile, started_at)
-            funnel.add(verdict)
-            if verdict.passed:
-                fresh.append(verdict)
-    except Exception as exc:  # noqa: BLE001 - the run record must capture why
-        store.finish_run(run_id, ok=False, fetched=funnel.fetched, error=str(exc))
+    sources = [(Himalayas(), config.HIMALAYAS_MAX_PAGES, "HIMALAYAS_MAX_PAGES"),
+               (OnlineJobs(), config.ONLINEJOBS_MAX_PAGES, "ONLINEJOBS_MAX_PAGES")]
+    by_name = {s[0].name: s[0] for s in sources}
+    if args.source:
+        sources = [s for s in sources if s[0].name == args.source]
+        if not sources:
+            log(f"[error] no source named {args.source!r}")
+            store.close()
+            return 1
+
+    # Per-source isolation, deliberately. onlinejobs is scraped markup with no
+    # contract behind it, so a class rename upstream is a matter of when. One
+    # source dying must not throw away the other's results — the run only fails
+    # if every source failed.
+    failures: list[str] = []
+    for source, max_pages, setting in sources:
+        before = funnel.fetched
+        try:
+            for job in source.fetch(since):
+                funnel.fetched += 1
+                if not args.rescore and store.seen(job.key):
+                    funnel.seen_skipped += 1
+                    continue
+                verdict = filters.evaluate(job, profile, started_at)
+                funnel.add(verdict)
+                if verdict.passed:
+                    fresh.append(verdict)
+        except Exception as exc:  # noqa: BLE001 - the run record must capture why
+            failures.append(f"{source.name}: {exc}")
+            log(f"[warn] {source.name} failed, continuing: {exc}")
+            continue
+
+        log(f"[run] {source.name}: {funnel.fetched - before} fetched "
+            f"({source.pages_fetched} pages)")
+        if source.hit_page_cap:
+            log(
+                f"[warn] {source.name} stopped at the {max_pages}-page cap before "
+                f"reaching {since:%Y-%m-%d %H:%M}Z — older jobs in this window were "
+                f"NOT seen. Raise {setting} or run more often."
+            )
+
+    if failures and len(failures) == len(sources):
+        store.finish_run(run_id, ok=False, fetched=funnel.fetched, error="; ".join(failures))
         store.close()
-        log(f"[error] fetch failed: {exc}")
+        log("[error] every source failed: " + "; ".join(failures))
         return 1
 
-    log(f"[run] {funnel.line()} ({source.pages_fetched} pages)")
-    if source.hit_page_cap:
-        log(
-            f"[warn] stopped at the {config.HIMALAYAS_MAX_PAGES}-page cap before reaching {since:%Y-%m-%d %H:%M}Z — "
-            "older jobs in this window were NOT seen. Raise HIMALAYAS_MAX_PAGES "
-            "or run more often."
-        )
+    log(f"[run] {funnel.line()}")
+
+    # Some sources only publish a teaser in their listing feed. Fetch the full
+    # advert for survivors ONLY -- after the funnel, before scoring. Doing it at
+    # fetch time would pay a request for every listing the salary floor throws
+    # away, and skipping it entirely means both the scorer and
+    # eligibility_sentences() judge a job on a few hundred truncated characters.
+    hydratable = [v for v in fresh if hasattr(by_name.get(v.job.source), "hydrate")]
+    if hydratable:
+        cap = config.ONLINEJOBS_MAX_HYDRATE
+        if len(hydratable) > cap:
+            log(f"[warn] {len(hydratable)} survivors need full text but the cap is {cap}; "
+                f"the remainder are scored on their teaser only")
+            hydratable = hydratable[:cap]
+        log(f"[run] fetching full text for {len(hydratable)} survivor(s)")
+        for n, verdict in enumerate(hydratable, 1):
+            source = by_name[verdict.job.source]
+            full = source.hydrate(verdict.job)
+            if full is not verdict.job:
+                verdict.job = full
+                # Hiring restrictions live in the boilerplate at the BOTTOM of
+                # an ad, so they only become visible now. Recompute just this;
+                # re-running the whole funnel here could retroactively reject a
+                # job the counted funnel already passed.
+                verdict.eligibility_notes = filters.eligibility_sentences(full.description)
+            if n % 20 == 0:
+                log(f"[run]   {n}/{len(hydratable)}")
 
     if args.explain:
         for verdict in funnel.rejects:
@@ -150,6 +208,12 @@ def main() -> int:
             for i in range(len(fresh))
         ]
 
+    # Intersect what each posting asked for with what this candidate cannot
+    # supply, and dock the score for the mandatory ones. Deterministic and
+    # local -- see blockers.py for why it is not the model's job.
+    results = blockers_mod.apply(results, profile)
+    blocked = sum(1 for r in results if r.get("blockers"))
+
     # scorer.score() pads to len(fresh), so a length mismatch is a real bug.
     pairs = list(zip(fresh, results, strict=True))
 
@@ -166,6 +230,8 @@ def main() -> int:
                 verdict.job, run_id, verdict.salary_signal,
                 score=result.get("score"), verdict=result.get("verdict"),
                 why=result.get("why"), cv_variant=result.get("cv_variant"),
+                score_raw=result.get("score_raw"), blockers=result.get("blockers"),
+                requirements=result.get("requirements"),
             )
         for verdict in funnel.rejects:
             store.record_reject(verdict, run_id)
@@ -190,7 +256,11 @@ def main() -> int:
 
     store.close()
     above = sum(1 for _, r in pairs if (r.get("score") or 0) >= profile.display_threshold)
-    log(f"[run] done — {len(pairs)} scored, {above} above {profile.display_threshold}")
+    note = f", {blocked} blocked" if blocked else ""
+    log(f"[run] done — {len(pairs)} scored, {above} above {profile.display_threshold}{note}")
+    if blocked:
+        log("[run] 'blocked' = a mandatory ask you flagged in deliverables.cannot_provide. "
+            "See `py report.py`.")
     return 0
 
 

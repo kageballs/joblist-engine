@@ -12,7 +12,10 @@ FAST_MODEL = "claude-haiku-4-5-20251001"
 # Jobs per scoring request. Output size scales with this, so it is also the
 # truncation guard: max_tokens is derived from it, not guessed.
 SCORE_BATCH_SIZE = 12
-TOKENS_PER_JOB = 220
+# Raised from 220 when the scorer began returning `requirements` per job.
+# Undersizing this does not lose data -- score_batch() bisects on max_tokens --
+# but it pays for the discarded half of every overrun.
+TOKENS_PER_JOB = 320
 
 # How far back to look when there is no previous successful run to measure from.
 FIRST_RUN_LOOKBACK_HOURS = 48
@@ -32,6 +35,61 @@ HIMALAYAS_API = "https://himalayas.app/jobs/api"
 # 2026-08-24). Stated explicitly so nobody "optimises" it back up to 100.
 HIMALAYAS_PAGE_SIZE = 20
 HIMALAYAS_MAX_PAGES = 120
+
+ONLINEJOBS_SEARCH = "https://www.onlinejobs.ph/jobseekers/jobsearch"
+# Their robots.txt asks for Crawl-delay: 5 and we honour it literally. That is
+# the whole politeness budget for this source -- 30 results per page means a
+# 24h window is ~10 pages, so a run costs about a minute of wall clock.
+ONLINEJOBS_CRAWL_DELAY_SECONDS = 5
+ONLINEJOBS_PAGE_SIZE = 30
+ONLINEJOBS_MAX_PAGES = 40
+# Detail pages are fetched only for jobs that survive the funnel, one request
+# each at the 5s crawl delay. The cap is a wall-clock guard: 120 survivors is
+# already 10 minutes, and a run that would exceed it is better off truncated
+# and loud than silently spending an hour.
+ONLINEJOBS_MAX_HYDRATE = 120
+
+# OnlineJobs.ph states pay as free text, so the source normalises it to USD
+# itself (sources/onlinejobs.py). These rates are approximate and were taken on
+# 2026-08-30; they drift. That only matters for listings sitting within a few
+# percent of the rate floor, which on this board is a rounding error against
+# the ~96% that are nowhere near it. Revisit if PHP moves sharply.
+FX_TO_USD = {"USD": 1.0, "PHP": 1 / 58.5, "AUD": 0.66}
+
+# What a posting can ASK A CANDIDATE TO PRODUCE, as a fixed vocabulary.
+#
+# Fixed, because the whole point is counting across months of listings: if the
+# model answers in free text, "screenshots of your GHL builds" and "portfolio
+# of GoHighLevel work" are two rows and the tally is worthless. The model picks
+# a key from this list and puts the specifics in `detail`.
+#
+# This is the ASK, not the person. Nothing here says what any candidate can or
+# cannot supply -- that lives in profile.yaml and never leaves this machine.
+REQUIREMENT_KINDS = {
+    # ONE key, not two. Measured 2026-08-30 over 86 OLJ listings: employers ask
+    # for "portfolio", "examples", "samples", "links to work you've done" and
+    # almost never name a format. Splitting screenshots from links invented a
+    # distinction the ads do not make, and a candidate whose client work is
+    # under NDA cannot supply any of them regardless of format -- so the split
+    # only produced a flag that matched nothing.
+    "work_samples": "proof of work you have done, in any form: portfolio, samples, screenshots, live links, case studies",
+    "public_code": "public GitHub/GitLab, or a code sample on request",
+    "video_intro": "a recorded video or Loom introduction",
+    "test_task": "an unpaid trial task, take-home or spec work",
+    "timed_trial": "a paid or unpaid probation/trial period before hire",
+    "certification": "a named vendor certification",
+    "degree": "a formal degree",
+    "years_experience": "a stated minimum number of years",
+    "references": "contactable former employers or clients",
+    "named_clients": "naming past clients or employers specifically",
+    "own_tooling": "you must already own or pay for a specific tool licence",
+    "equipment": "specific hardware, headset, or an internet speed floor",
+    "time_tracker": "monitoring software or screenshot-based time tracking",
+    "background_check": "police/NBI clearance or a background check",
+    "id_verification": "verified government ID or platform ID proofing",
+    "language_other": "a working language other than English",
+    "onsite_presence": "any physical attendance, relocation or office days",
+}
 
 USER_AGENT = "joblist/2.0 (+https://github.com/kageballs/joblist)"
 

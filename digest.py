@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 
+import blockers
 import config
 
 VERDICT_ORDER = {"strong": 0, "maybe": 1, "no": 2, "unscored": 3}
@@ -103,9 +104,14 @@ def render(funnel, scored_pairs, profile, model, started_at, no_llm=False) -> st
 def _entry(verdict, result) -> str:
     job = verdict.job
     score = result.get("score")
-    head = "### {} — {}".format(
-        "unscored" if score is None else score, job.title
-    )
+    raw = result.get("score_raw")
+    # Show the arithmetic when a penalty moved the score. A silently docked
+    # number looks like the model rating the work poorly, which is the opposite
+    # of what happened -- the work may be a fine match you simply cannot apply to.
+    shown = "unscored" if score is None else str(score)
+    if score is not None and raw is not None and raw != score:
+        shown = f"{score} (was {raw})"
+    head = f"### {shown} — {job.title}"
     bits = [head, ""]
     bits.append("**{}** · {} · posted {:%Y-%m-%d}".format(
         job.company or "unknown company",
@@ -120,6 +126,20 @@ def _entry(verdict, result) -> str:
         bits.append("Matches: " + ", ".join(result["matched_skills"][:8]))
     if result.get("concerns"):
         bits.append("Concerns: " + "; ".join(result["concerns"][:4]))
+    if result.get("blockers"):
+        bits.append(
+            "🚫 Requires what you cannot supply: "
+            + blockers.describe(result["blockers"])
+            + "."
+        )
+    if result.get("soft_blockers"):
+        # Asked for but not a condition: worth answering in the cover note
+        # rather than a reason to skip the listing.
+        bits.append(
+            "Asks for, but does not require: "
+            + blockers.describe(result["soft_blockers"])
+            + "."
+        )
     if verdict.flagged_employer:
         bits.append(
             f"⚠️ {verdict.flagged_employer} — outsourcing intermediary, poor long-term anchor."

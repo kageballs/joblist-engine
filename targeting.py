@@ -38,6 +38,11 @@ class Profile:
     employer_flags: tuple[str, ...]
     resume_path: str
     display_threshold: int
+    # Requirement keys (config.REQUIREMENT_KINDS) this person cannot supply.
+    # A frozenset so membership is cheap and the value cannot be mutated by a
+    # caller holding the profile.
+    cannot_provide: frozenset[str]
+    blocker_penalty: int
     resume: str = field(default="", repr=False)
 
     def flagged_employer(self, company: str) -> str | None:
@@ -118,6 +123,21 @@ def load(path: str | None = None) -> Profile:
     # they had approached you, and it only ever affects presentation.
     inbound_floor = float(rate.get("inbound_floor_hourly_usd", target))
 
+    deliverables = raw.get("deliverables") or {}
+    cannot = [str(k).strip() for k in (deliverables.get("cannot_provide") or []) if str(k).strip()]
+    # Fail loudly on a typo. A key that matches nothing would otherwise sit in
+    # the profile looking effective while silently flagging zero listings --
+    # exactly the failure this feature exists to prevent.
+    unknown = sorted(set(cannot) - set(config.REQUIREMENT_KINDS))
+    if unknown:
+        raise ProfileError(
+            "deliverables.cannot_provide has "
+            f"{'keys' if len(unknown) > 1 else 'a key'} that is not a requirement kind: "
+            + ", ".join(unknown)
+            + "\nValid keys: "
+            + ", ".join(sorted(config.REQUIREMENT_KINDS))
+        )
+
     resume_path = scoring.get("resume_path", "data/resume.md")
     resume = ""
     if os.path.exists(resume_path):
@@ -144,5 +164,7 @@ def load(path: str | None = None) -> Profile:
         employer_flags=tuple(raw.get("employers", {}).get("flag") or []),
         resume_path=resume_path,
         display_threshold=int(scoring.get("display_threshold", 60)),
+        cannot_provide=frozenset(cannot),
+        blocker_penalty=int(deliverables.get("blocker_penalty", 30)),
         resume=resume,
     )

@@ -54,7 +54,23 @@ country. That is neutral, and often the fastest route to a start date.
 `why` is one sentence, concrete, naming the specific overlap or gap. Never
 generic praise. `cv_variant` picks which CV to send: "automation" for
 AI/automation, solutions or integration engineering posts, "engineering" for
-everything else."""
+everything else.
+
+`requirements` lists what the posting asks the APPLICANT TO PRODUCE in order
+to apply or be hired -- artefacts and credentials, not skills. "Must know
+Python" is a skill and does not belong here; "send screenshots of funnels you
+have built", "provide two client references", "must hold a HubSpot
+certification" and "you will install our time tracker" do.
+
+Set `mandatory` true only when the posting states it as a condition. Words
+like must, required, non-negotiable, "do not apply without" are mandatory.
+"Bonus", "nice to have", "a plus", "preferred" are NOT -- set them false. When
+the wording is genuinely ambiguous, choose false; a preference wrongly called
+mandatory removes a job the candidate could have taken.
+
+Judging the score, treat requirements as neutral. Do not mark a listing down
+for asking, and do not guess what this candidate happens to have. Report what
+is asked; something downstream decides what it costs."""
 
 TOOL = {
     "name": "submit_scores",
@@ -74,6 +90,29 @@ TOOL = {
                         "matched_skills": {"type": "array", "items": {"type": "string"}},
                         "concerns": {"type": "array", "items": {"type": "string"}},
                         "cv_variant": {"type": "string", "enum": ["engineering", "automation"]},
+                        "requirements": {
+                            "type": "array",
+                            "description": (
+                                "What the posting asks the applicant to PRODUCE to apply or be "
+                                "hired: artefacts and credentials, never skills. Omit entirely "
+                                "when the posting asks for nothing beyond an application."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"type": "string", "enum": sorted(config.REQUIREMENT_KINDS)},
+                                    "mandatory": {
+                                        "type": "boolean",
+                                        "description": "True only if stated as a condition, not a preference.",
+                                    },
+                                    "detail": {
+                                        "type": "string",
+                                        "description": "The specific ask, quoted or tightly paraphrased, <=100 chars.",
+                                    },
+                                },
+                                "required": ["kind", "mandatory"],
+                            },
+                        },
                     },
                     "required": ["i", "score", "verdict", "why", "cv_variant"],
                 },
@@ -100,7 +139,24 @@ def build_system(profile) -> list[dict]:
             "Treats as local-rate anchored: " + ", ".join(sorted(profile.local_anchor_regions)),
         ]
     )
-    body = "\n\n".join([RUBRIC, targeting, "CANDIDATE RESUME\n" + profile.resume])
+    # The enum gives the model keys with no meanings, so the vocabulary is
+    # spelled out here too. sorted(), not dict order, so a config edit that
+    # only reorders cannot silently invalidate the cache.
+    kinds = "\n".join(
+        f"  {key}: {meaning}" for key, meaning in sorted(config.REQUIREMENT_KINDS.items())
+    )
+    vocabulary = "REQUIREMENT KINDS (use these keys exactly)\n" + kinds
+
+    # NOTE what is deliberately absent: nothing about what this candidate can
+    # or cannot supply. The model reports what each posting ASKS FOR; matching
+    # that against the personal `cannot_provide` list happens locally, in
+    # blockers.py. Two reasons, both load-bearing:
+    #   - that list never leaves this machine, and
+    #   - editing it re-flags the whole stored history for free, with no
+    #     re-scoring and no cache invalidation.
+    body = "\n\n".join(
+        [RUBRIC, targeting, vocabulary, "CANDIDATE RESUME\n" + profile.resume]
+    )
     return [{"type": "text", "text": body, "cache_control": {"type": "ephemeral"}}]
 
 
@@ -228,6 +284,7 @@ def score(verdicts, profile, api_key, model=None):
                 "matched_skills": [],
                 "concerns": [],
                 "cv_variant": "engineering",
+                "requirements": [],
             }
     return results
 

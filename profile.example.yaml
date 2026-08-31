@@ -91,3 +91,28 @@ scoring:
   # Display filter only. Every scored job is stored regardless, so that
   # changing this number never rewrites history.
   display_threshold: 60
+
+# What a posting can demand that you cannot hand over.
+#
+# These are the ASKS a listing makes of an applicant, not skills. Discover what
+# is actually being asked with `py report.py`, which tallies every requirement
+# seen across your stored history and marks the ones you have flagged.
+#
+# A key here never rejects a listing -- it lowers the score by blocker_penalty
+# for each MANDATORY ask you cannot meet, because a listing sometimes restates
+# a "requirement" it does not enforce, and you are the one who knows which.
+# Raise blocker_penalty to bury them instead.
+#
+# Nothing in this section is ever sent to the API. Matching happens locally, so
+# editing this list re-flags your whole history with no re-scoring.
+#
+# Valid keys are the ones in config.REQUIREMENT_KINDS:
+#   work_samples  public_code  video_intro
+#   test_task  timed_trial  certification  degree  years_experience
+#   references  named_clients  own_tooling  equipment  time_tracker
+#   background_check  id_verification  language_other  onsite_presence
+deliverables:
+  cannot_provide:
+    - work_samples            # client work is under NDA, nothing is showable
+    - named_clients
+  blocker_penalty: 30

@@ -54,6 +54,25 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_posted ON jobs(posted_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_score  ON jobs(score DESC);
 
+-- What each posting asked the applicant to PRODUCE, one row per requirement.
+--
+-- A table rather than a JSON column on `jobs`, because the whole reason this
+-- is stored is `GROUP BY kind` across months of listings -- "what am I asked
+-- for most often". That query is trivial here and awkward against JSON.
+--
+-- `blocking` is denormalised from profile.yaml at write time for convenience,
+-- but it is NOT the source of truth: report.py re-derives it from the live
+-- profile, so editing cannot_provide re-flags history without a rewrite.
+CREATE TABLE IF NOT EXISTS job_requirements (
+    uid          TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    mandatory    INTEGER NOT NULL DEFAULT 0,
+    detail       TEXT,
+    blocking     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (uid, kind)
+);
+CREATE INDEX IF NOT EXISTS jobreq_kind ON job_requirements(kind);
+
 -- Local only. Never pushed anywhere: a reject row carrying
 -- "blocklisted employer" would make the blocklist inferable.
 CREATE TABLE IF NOT EXISTS rejects (
@@ -81,6 +100,7 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
 
     def close(self) -> None:
@@ -142,8 +162,30 @@ class Store:
 
     # -- writes ------------------------------------------------------------
 
+    def _migrate(self) -> None:
+        """Add columns to a `jobs` table that predates them.
+
+        `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so new
+        columns never appear without this. Idempotent and additive: it reads
+        the live column list rather than tracking a version number, and it
+        never drops or rewrites, so running an older build against a migrated
+        database still works.
+        """
+        have = {row[1] for row in self.conn.execute("PRAGMA table_info(jobs)")}
+        for column, ddl in (
+            # What the model said, before any blocker penalty. Kept because the
+            # penalty is applied locally and must stay re-derivable.
+            ("score_raw", "ALTER TABLE jobs ADD COLUMN score_raw INTEGER"),
+            # JSON array of requirement kinds this candidate cannot meet.
+            ("blockers", "ALTER TABLE jobs ADD COLUMN blockers TEXT"),
+        ):
+            if column not in have:
+                self.conn.execute(ddl)
+        self.conn.commit()
+
     def record_job(self, job, run_id, salary_signal, score=None, verdict=None,
-                   why=None, cv_variant=None) -> None:
+                   why=None, cv_variant=None, score_raw=None, blockers=None,
+                   requirements=None) -> None:
         """Store every scored survivor, above threshold or not.
 
         The display threshold must stay a rendering concern: absolute model
@@ -152,14 +194,28 @@ class Store:
         """
         self.conn.execute(
             "INSERT OR REPLACE INTO jobs (uid, source, title, company, url, posted_at,"
-            " regions, salary_signal, score, verdict, why, cv_variant, run_id, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " regions, salary_signal, score, verdict, why, cv_variant, run_id, created_at,"
+            " score_raw, blockers)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job.key, job.source, job.title, job.company, job.url,
                 job.posted.isoformat(), json.dumps(list(job.location_restrictions)),
                 salary_signal, score, verdict, why, cv_variant, run_id, _now(),
+                score_raw, json.dumps(sorted(blockers or [])),
             ),
         )
+        # Replace rather than accumulate: a re-scored job must not keep the
+        # requirements of its previous pass alongside the new ones.
+        self.conn.execute("DELETE FROM job_requirements WHERE uid = ?", (job.key,))
+        for row in requirements or []:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO job_requirements (uid, kind, mandatory, detail, blocking)"
+                " VALUES (?,?,?,?,?)",
+                (
+                    job.key, row["kind"], int(bool(row.get("mandatory"))),
+                    row.get("detail") or "", int(row["kind"] in (blockers or [])),
+                ),
+            )
 
     def record_reject(self, verdict, run_id: int) -> None:
         self.conn.execute(
