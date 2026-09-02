@@ -13,6 +13,10 @@ py main.py --since 72h      # override the watermark
 py main.py --source onlinejobs   # one source only
 py main.py --rescore        # re-evaluate jobs already marked seen
 
+py cover.py <uid>           # draft a cover letter for one stored job
+py cover.py --top 5         # draft for the 5 highest-scoring stored jobs
+py cover.py <uid> --dry-run # print the prompt, call nothing
+
 py report.py                # what employers keep asking you to produce
 py report.py --blocked      # listings you cannot currently apply to
 py report.py --detail work_samples   # the actual sentences
@@ -40,8 +44,18 @@ main.py
   -> scorer.py              ONE batched Claude call over the survivors
   -> blockers.py            local: what you cannot supply, and what it costs
   -> digest.py              markdown
-  -> store.py               SQLite: seen, watermark, runs, rejects
+  -> store.py               SQLite: seen, watermark, runs, rejects, advert text
 ```
+
+`cover.py` is a separate entry point, not a stage. It reads a job the run
+already stored and drafts a letter against the full advert. It is on-demand by
+uid because a letter is only worth writing for a posting a human has chosen;
+generating one per scored job repeats, at the expensive end, exactly what
+`filters.py` prevents at the cheap end. The `description` column exists for it
+and is deliberately absent from `push.FIELDS`, so the **full advert** stays on
+this machine. That is not a blanket claim about employer text: the short quoted
+fragment in `job_requirements.detail` IS pushed, deliberately, because the
+dashboard's "to improve" view is built from it.
 
 ### The load-bearing idea
 

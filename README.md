@@ -133,6 +133,34 @@ There is no `--daily` flag. Point your OS scheduler at `py main.py` — the tool
 tracks its own watermark from the last successful run, so a missed day is
 caught up automatically rather than silently skipped.
 
+### Drafting a cover letter
+
+Once a listing is worth applying to, draft the letter against the advert that
+was actually stored:
+
+```bash
+py cover.py <uid>           # one job; a unique uid prefix works
+py cover.py --top 5         # the five highest-scoring stored jobs
+py cover.py <uid> --dry-run # print the prompt, call nothing, cost nothing
+py cover.py <uid> --force   # redraft over an existing file
+```
+
+Drafts land in `data/covers/<uid>.md`, are never sent anywhere, and open with a
+banner saying so. If the posting asks for something in your `cannot_provide`
+list, the file says that first, before you spend time editing prose for a job
+you cannot apply to.
+
+**This is deliberately not part of `py main.py`.** A run scores every survivor
+because ranking is what makes the digest worth opening. A letter is only worth
+writing for a posting a human has already chosen, so drafting one per scored
+job would spend a long call on the ones that never get sent. That is the same
+mistake `filters.py` exists to avoid at the other end of the funnel.
+
+The model is told, in the system block, to claim nothing the resume does not
+evidence, and to write "NO STRONG MATCH:" instead of a letter if the resume
+does not support the application. Treat both as best effort, not a guarantee:
+the banner on every draft says to read it before sending, and it means it.
+
 ## Output
 
 A markdown digest at `data/digest/YYYY-MM-DD.md`:
@@ -172,10 +200,11 @@ config.py              constants, the requirement vocabulary, the user agent
 targeting.py           loads profile.yaml into a Profile
 filters.py             the deterministic funnel — the heart of it
 scorer.py              one batched Claude call per group of survivors
+cover.py               on-demand cover-letter draft for one stored job
 blockers.py            local match of asks against what you cannot supply
 report.py              what employers keep asking for, tallied over history
 digest.py              markdown rendering
-store.py               SQLite: seen ids, watermark, run history, rejects
+store.py               SQLite: seen ids, watermark, runs, rejects, advert text
 push.py                ships scored rows to the D1 dashboard
 sources/
   base.py              Job model and the Source protocol
@@ -184,7 +213,7 @@ sources/
 dashboard/             Cloudflare Worker + D1, password-gated read-only view
 examples/              sample digest and resume, for the bundled demo profile
 fixtures/              committed API captures, so tests run offline
-tests/                 103 offline, 3 live
+tests/                 132 offline, 3 live
 docs/
   how-this-was-built.md   the agent-delegation method behind the repo
 ```

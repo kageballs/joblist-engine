@@ -9,6 +9,11 @@ which is gitignored. Nothing in this file should be embarrassing in public.
 SCORING_MODEL = "claude-sonnet-5"
 FAST_MODEL = "claude-haiku-4-5-20251001"
 
+# Drafting a letter is a writing task over one long advert, not a ranking task
+# over twelve short ones, so it does not share SCORE_BATCH_SIZE or its budget.
+COVER_MODEL = SCORING_MODEL
+COVER_MAX_TOKENS = 1200
+
 # Jobs per scoring request. Output size scales with this, so it is also the
 # truncation guard: max_tokens is derived from it, not guessed.
 SCORE_BATCH_SIZE = 12
@@ -96,4 +101,5 @@ USER_AGENT = "joblist/2.0 (+https://github.com/kageballs/joblist)"
 DATA_DIR = "data"
 DB_PATH = "data/joblist.sqlite3"
 DIGEST_DIR = "data/digest"
+COVER_DIR = "data/covers"
 PROFILE_PATH = "profile.yaml"

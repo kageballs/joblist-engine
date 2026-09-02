@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     verdict      TEXT,
     why          TEXT,
     cv_variant   TEXT,
+    description  TEXT,
     run_id       INTEGER REFERENCES runs(id),
     created_at   TEXT NOT NULL
 );
@@ -178,6 +179,12 @@ class Store:
             ("score_raw", "ALTER TABLE jobs ADD COLUMN score_raw INTEGER"),
             # JSON array of requirement kinds this candidate cannot meet.
             ("blockers", "ALTER TABLE jobs ADD COLUMN blockers TEXT"),
+            # The full advert as fetched. Kept so cover.py can draft against
+            # the real posting without re-fetching a page that may already be
+            # gone, and so a redraft costs nothing but the one call. Local
+            # only: push.FIELDS is an allowlist and does not name it, so an
+            # employer's advert text is never copied to the D1 dashboard.
+            ("description", "ALTER TABLE jobs ADD COLUMN description TEXT"),
         ):
             if column not in have:
                 self.conn.execute(ddl)
@@ -195,13 +202,13 @@ class Store:
         self.conn.execute(
             "INSERT OR REPLACE INTO jobs (uid, source, title, company, url, posted_at,"
             " regions, salary_signal, score, verdict, why, cv_variant, run_id, created_at,"
-            " score_raw, blockers)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " score_raw, blockers, description)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job.key, job.source, job.title, job.company, job.url,
                 job.posted.isoformat(), json.dumps(list(job.location_restrictions)),
                 salary_signal, score, verdict, why, cv_variant, run_id, _now(),
-                score_raw, json.dumps(sorted(blockers or [])),
+                score_raw, json.dumps(sorted(blockers or [])), job.description,
             ),
         )
         # Replace rather than accumulate: a re-scored job must not keep the
@@ -237,6 +244,37 @@ class Store:
             "SELECT * FROM jobs WHERE COALESCE(score, 0) >= ?"
             " ORDER BY score DESC, posted_at DESC LIMIT ?",
             (min_score, limit),
+        ).fetchall()
+
+    def get_job(self, uid: str):
+        """One stored job by uid, or None.
+
+        Accepts a unique prefix as well as the full uid: the uids in a digest
+        are long, and the realistic caller is a human retyping one from a
+        rendered list. Ambiguity raises rather than guessing, because drafting
+        a letter against the wrong advert is worse than being asked again.
+        """
+        row = self.conn.execute("SELECT * FROM jobs WHERE uid = ?", (uid,)).fetchone()
+        if row is not None:
+            return row
+        # `%` and `_` are LIKE wildcards. Concatenating a raw prefix would let
+        # `himalayas:%` match any single job and draft against an advert the
+        # caller never asked for, which is the exact outcome this method exists
+        # to prevent.
+        escaped = uid.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        rows = self.conn.execute(
+            "SELECT * FROM jobs WHERE uid LIKE ? ESCAPE '!' LIMIT 2", (escaped + "%",)
+        ).fetchall()
+        if len(rows) > 1:
+            raise LookupError(f"{uid!r} matches more than one job; use the full uid")
+        return rows[0] if rows else None
+
+    def requirements_for(self, uid: str):
+        """What this posting asked the applicant to produce."""
+        return self.conn.execute(
+            "SELECT kind, mandatory, detail FROM job_requirements"
+            " WHERE uid = ? ORDER BY mandatory DESC, kind",
+            (uid,),
         ).fetchall()
 
     def reject_stats(self) -> dict:

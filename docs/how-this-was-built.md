@@ -30,7 +30,7 @@ flowchart TD
     ME ==> CR
 
     CR["<b>Adversarial review</b> — Opus<br/><i>fresh context, did not write the code</i>"]
-    CR ==> GATE{{"<b>The gate</b><br/>103 offline tests · ruff<br/>GitHub Actions CI"}}
+    CR ==> GATE{{"<b>The gate</b><br/>132 offline tests · ruff<br/>GitHub Actions CI"}}
     GATE ==>|"pass"| MERGE([merge])
 
     GATE -.->|"fail"| ORCH
@@ -60,7 +60,7 @@ runs in a fresh context and did not write the code, so it cannot be persuaded
 by its own reasoning from an hour earlier.
 
 **The gate is mechanical, not conversational.** Nothing merges because an agent
-said it was finished. It merges because 103 offline tests and `ruff` pass in
+said it was finished. It merges because 132 offline tests and `ruff` pass in
 CI. Agents are fast and confidently wrong; the test suite is the thing that
 does not care how confident anyone was.
 
