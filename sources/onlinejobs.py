@@ -6,7 +6,7 @@ architecture's central assumption.
 Himalayas pays for itself because `locationRestrictions` and
 `timezoneRestrictions` are structured fields that eliminate ~97.7% for zero
 tokens. Here BOTH of those stages are inert: every listing on this board is
-open to Filipinos, and the profile this tool runs for is based in the Philippines. So
+open to Filipinos, and so is the profile this tool runs against. So
 region and timezone reject nothing, and **salary becomes the only load-bearing
 filter in the funnel**.
 
