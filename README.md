@@ -28,6 +28,62 @@ LATAM-only, or a "worldwide" role that is really a staffing agency placement.
 That division is the entire design. Deterministic where the data is
 trustworthy, model where it demonstrably lies.
 
+### The pipeline
+
+Every stage before `scorer.py` is deterministic and costs nothing. The model is
+the last thing reached, and it only ever sees what survived.
+
+```mermaid
+flowchart TD
+    H["sources/himalayas.py<br/><i>cursor pagination, JSON feed</i>"]
+    O["sources/onlinejobs.py<br/><i>offset pagination, scraped HTML</i>"]
+    W{{"store.since()<br/>watermark + seen ids"}}
+
+    H --> W
+    O --> W
+    W -->|"2665 fetched"| F
+
+    subgraph F["filters.py — 6 ordered stages, zero tokens"]
+        direction LR
+        S1["expired"] --> S2["region"] --> S3["timezone"] --> S4["employer"] --> S5["salary"] --> S6["role"]
+    end
+
+    F -->|"-2278 region · -213 salary · -14 role"| R["rejects table<br/><i>every cut, with its reason</i>"]
+    F -->|"~0.6% survive"| HY
+
+    HY["source.hydrate()<br/><i>full advert text — SURVIVORS ONLY</i>"]
+    HY --> SC
+
+    SC["scorer.py<br/><b>one batched Claude call</b><br/><i>cached system block, no transcript</i>"]
+    SC -->|"score_raw + requirements"| BL
+
+    BL["blockers.py<br/><i>local match against cannot_provide</i><br/><b>never sent to the API</b>"]
+    BL -->|"score after penalty"| D
+
+    D["digest.py<br/><i>markdown</i>"]
+    D --> ST["store.py<br/><i>SQLite</i>"]
+    ST --> PU["push.py"]
+    PU --> D1[("Cloudflare D1")]
+    D1 --> WK["Workers dashboard<br/><i>password-gated</i>"]
+
+    style SC fill:#4a3f6b,stroke:#8b7fb8,color:#fff
+    style F fill:#1f3a2e,stroke:#4a7a63,color:#fff
+    style BL fill:#3a2f1f,stroke:#7a6a4a,color:#fff
+```
+
+Three things in that picture are the whole design:
+
+- **The model sits at the bottom, not the top.** Region and timezone alone
+  remove 97.7% using fields, so the expensive stage only ever reads the
+  remainder. Moving work up into `scorer.py` is the v1 mistake.
+- **`hydrate()` runs after the funnel, never before.** Fetching each advert's
+  own page at fetch time would spend a request on every listing the salary
+  floor discards for free, which is 20+ minutes at a 5s crawl delay.
+- **`blockers.py` never touches the API.** The model reports what a posting
+  *asks for*; matching that against what you cannot supply happens locally. So
+  the list never leaves the machine, and editing it re-prices the entire stored
+  history with zero API calls.
+
 ### An earlier version of this repo did the opposite
 
 v1 (commit `c143977`) handed the whole job to an agentic loop: a tool the model
@@ -112,17 +168,30 @@ matches.
 
 ```
 main.py                CLI and run orchestration
-targeting.py           loads profile.yaml
+config.py              constants, the requirement vocabulary, the user agent
+targeting.py           loads profile.yaml into a Profile
 filters.py             the deterministic funnel — the heart of it
 scorer.py              one batched Claude call per group of survivors
-store.py               SQLite: seen ids, watermark, run history, rejects
+blockers.py            local match of asks against what you cannot supply
+report.py              what employers keep asking for, tallied over history
 digest.py              markdown rendering
+store.py               SQLite: seen ids, watermark, run history, rejects
+push.py                ships scored rows to the D1 dashboard
 sources/
   base.py              Job model and the Source protocol
-  himalayas.py         cursor pagination over the Himalayas feed
+  himalayas.py         cursor pagination over the Himalayas JSON feed
+  onlinejobs.py        offset pagination, scraped HTML, salary normaliser
+dashboard/             Cloudflare Worker + D1, password-gated read-only view
+examples/              sample digest and resume, for the bundled demo profile
 fixtures/              committed API captures, so tests run offline
-tests/
+tests/                 103 offline, 3 live
+docs/
+  how-this-was-built.md   the agent-delegation method behind the repo
 ```
+
+How the repo itself is built, and the control structure around the coding
+agents that write most of it, is documented in
+[`docs/how-this-was-built.md`](docs/how-this-was-built.md).
 
 ### Adding a source
 
