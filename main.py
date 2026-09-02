@@ -70,6 +70,26 @@ def log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _run_summary(pairs, profile, blocked: int) -> str:
+    """The closing line, per board.
+
+    `profile.display_threshold` still exists as the value `boards.defaults`
+    falls back to, and is deliberately not read here: a pooled "above
+    threshold" count would blend one board's zero threshold into another's
+    non-zero one, which is the exact number this rework exists to stop
+    producing. Ask each board what its own bar is.
+    """
+    parts = []
+    for board_name in sorted({v.job.source for v, _ in pairs}):
+        board = profile.board(board_name)
+        board_results = [r for v, r in pairs if v.job.source == board_name]
+        above = sum(1 for r in board_results if (r.get("score") or 0) >= board.display_threshold)
+        parts.append(f"{board_name} {above}/{len(board_results)} above {board.display_threshold}")
+    breakdown = " (" + ", ".join(parts) + ")" if parts else ""
+    note = f", {blocked} blocked" if blocked else ""
+    return f"[run] done — {len(pairs)} scored{breakdown}{note}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--dry-run", action="store_true")
@@ -283,9 +303,7 @@ def main() -> int:
         ))
 
     store.close()
-    above = sum(1 for _, r in pairs if (r.get("score") or 0) >= profile.display_threshold)
-    note = f", {blocked} blocked" if blocked else ""
-    log(f"[run] done — {len(pairs)} scored, {above} above {profile.display_threshold}{note}")
+    log(_run_summary(pairs, profile, blocked))
     if blocked:
         log("[run] 'blocked' = a mandatory ask you flagged in deliverables.cannot_provide. "
             "See `py report.py`.")

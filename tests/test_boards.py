@@ -439,3 +439,90 @@ def test_an_already_drafted_job_is_not_redrafted(profile, tmp_path, monkeypatch)
     assert cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None) == 1
     assert cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None) == 0
     assert len(client.calls) == 1, "a second run must not pay for the same letter twice"
+
+
+def test_an_unverified_region_reaches_the_scorer_as_a_warning(profile):
+    """The flag has to change the prompt, or computing it is theatre.
+
+    filters.py promises the scorer is told not to read silence as "worldwide".
+    That promise went unkept once already -- the field was set and no consumer
+    ever read it -- so this pins the wording to the flag rather than trusting
+    a comment to stay true.
+    """
+    import scorer
+
+    now = datetime(2026, 9, 2, tzinfo=UTC)
+    trusted = filters.evaluate(_job(), profile, now, source=_Board(True))
+    untrusted = filters.evaluate(_job(), profile, now, source=_Board(False))
+
+    assert "none stated (worldwide)" in scorer.render_batch([trusted])
+    warned = scorer.render_batch([untrusted])
+    assert "do NOT assume worldwide" in warned
+    assert "(worldwide)" not in warned, "the reassuring phrasing must not survive"
+
+
+def test_a_stated_region_renders_the_same_on_either_board(profile):
+    """The caveat is about silence. A populated field is a fact on any board."""
+    import scorer
+
+    now = datetime(2026, 9, 2, tzinfo=UTC)
+    job = _job(location_restrictions=("Philippines",))
+    on_trusted = scorer.render_batch([filters.evaluate(job, profile, now, source=_Board(True))])
+    on_untrusted = scorer.render_batch([filters.evaluate(job, profile, now, source=_Board(False))])
+
+    assert "hiring regions: Philippines" in on_trusted
+    assert on_trusted == on_untrusted
+
+
+def test_the_cap_is_shared_between_boards_not_won_by_the_generous_one(
+    profile, tmp_path, monkeypatch
+):
+    """The cap must not be allocated by a cross-board score ranking.
+
+    This is the isolation rule at its sharpest. On real history himalayas
+    averages 20.3 and onlinejobs 5.9, so sorting every candidate into one list
+    hands each slot to himalayas and the onlinejobs job that cleared its OWN
+    board's bar -- the harder achievement of the two -- never gets written.
+    """
+    import cover
+
+    path = _write_profile(tmp_path, lambda raw: raw["boards"].update(
+        {"himalayas": {"draft_at": 70}, "onlinejobs": {"draft_at": 70}}))
+    profile = targeting.load(path)
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+    monkeypatch.setattr(cover.config, "COVER_MAX_PER_RUN", 2)
+
+    # Both himalayas jobs outscore the onlinejobs one, which is exactly the
+    # situation a global sort gets wrong.
+    pairs = [_pair(profile, "himalayas", 95), _pair(profile, "himalayas", 88),
+             _pair(profile, "onlinejobs", 71)]
+    for i, pair in enumerate(pairs):
+        pair[0].job = pair[0].job.__class__(
+            **{**pair[0].job.__dict__, "source_id": f"job{i}"})
+
+    written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+    names = " ".join(p.name for p in (tmp_path / "covers").glob("*.md"))
+
+    assert written == 2
+    assert "job2" in names, "the onlinejobs job cleared its own bar and must get a slot"
+    assert "job0" in names, "himalayas' best still takes the first slot"
+    assert "job1" not in names, "himalayas' second must yield to the other board"
+
+
+def test_within_one_board_the_best_still_goes_first(profile, tmp_path, monkeypatch):
+    """Sharing between boards must not turn into ignoring rank inside one."""
+    import cover
+
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+    monkeypatch.setattr(cover.config, "COVER_MAX_PER_RUN", 1)
+
+    pairs = [_pair(profile, "onlinejobs", 72), _pair(profile, "onlinejobs", 97)]
+    for i, pair in enumerate(pairs):
+        pair[0].job = pair[0].job.__class__(
+            **{**pair[0].job.__dict__, "source_id": f"ol{i}"})
+
+    cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+    names = " ".join(p.name for p in (tmp_path / "covers").glob("*.md"))
+    assert "ol1" in names and "ol0" not in names

@@ -45,19 +45,46 @@ main.py
   -> source.hydrate()       full advert text, SURVIVORS ONLY
   -> scorer.py              ONE batched Claude call over the survivors
   -> blockers.py            local: what you cannot supply, and what it costs
-  -> digest.py              markdown
+  -> cover.auto_draft()     letters for whatever cleared each board's draft_at
+  -> digest.py              markdown, sectioned per board
   -> store.py               SQLite: seen, watermark, runs, rejects, advert text
 ```
 
-`cover.py` is a separate entry point, not a stage. It reads a job the run
-already stored and drafts a letter against the full advert. It is on-demand by
-uid because a letter is only worth writing for a posting a human has chosen;
+`cover.py` has two entry points. `main.py` calls `cover.auto_draft()` itself,
+right after `blockers.py` prices the batch and before the digest renders, so
+a run's own high scorers already have a draft waiting when the digest opens.
+Selection is per board (`boards.<name>.draft_at`), and `config.COVER_MAX_PER_RUN`
+then bounds the spend. Those slots are handed out round-robin — each board's
+best undrafted job, then each board's second — never by one list sorted across
+boards. Sorting them together would reintroduce the comparison the whole
+design prevents: with one board averaging 20.3 and the other 5.9, a global
+sort gives every slot to the generous board and starves the board where
+clearing `draft_at` was the harder thing to do. Within a board the ranking is
+real, so there it is highest-first. A draft already on
+disk is skipped, so re-running never re-bills a job, and one job's API
+failure is caught and logged rather than losing the drafts already written or
+failing the run. It is skipped outright under `--dry-run` (nothing is
+persisted to point a draft at), `--no-llm` (nothing was scored), and
+`--no-cover`.
+
+`py cover.py <uid>` is the second entry point, for a job that did not clear
+`draft_at` today but is worth writing for anyway. It reads a job the run
+already stored and drafts against the full advert — on-demand by uid because
 generating one per scored job repeats, at the expensive end, exactly what
-`filters.py` prevents at the cheap end. The `description` column exists for it
-and is deliberately absent from `push.FIELDS`, so the **full advert** stays on
-this machine. That is not a blanket claim about employer text: the short quoted
-fragment in `job_requirements.detail` IS pushed, deliberately, because the
-dashboard's "to improve" view is built from it.
+`filters.py` prevents at the cheap end. The `description` column exists for
+it and is deliberately absent from `push.FIELDS`, so the **full advert**
+stays on this machine. That is not a blanket claim about employer text: the
+short quoted fragment in `job_requirements.detail` IS pushed, deliberately,
+because the dashboard's "to improve" view is built from it.
+
+Never build a draft's file path from a uid directly. A uid is
+`source:source_id`, and on Himalayas the id is the advert's full URL, so a raw
+uid is not a legal Windows filename — a bare colon either raises `OSError` or
+gets silently read as an NTFS alternate-data-stream separator, losing the
+letter after the API call has already been paid for. `cover.slug()` sanitises
+it and appends a hash of the original so two adverts that sanitise to the
+same string cannot overwrite each other. `cover.out_path()` is the only
+correct way to get the path.
 
 ### The load-bearing idea
 
@@ -102,6 +129,29 @@ The stated pay string is also prepended to the description, because
 model can contradict it.
 
 Measured 2026-08-30: **82 fetched -> 61 rejected on salary for zero tokens.**
+
+### `targeting.py` — capability vs. policy
+
+Two different things live in two different places, and confusing them is the
+mistake this split exists to prevent.
+
+A board **capability** is a fact about the feed: whether its region, salary or
+expiry field can be trusted at all. That lives in `sources/<name>.py`
+(`regions_authoritative`, `salary_authoritative`, `publishes_expiry` —
+`sources/base.py`), because it does not vary by operator: Himalayas either
+publishes real timezone data or it does not.
+
+A board **policy** is this operator's tuning of a board they have already
+decided to trust — `display_threshold`, `draft_at`, `absolute_floor_hourly_usd`,
+`max_age_days`. That lives in `profile.yaml` under `boards:`, parsed into a
+`BoardPolicy` by `targeting._boards()`.
+
+`Profile.board(name)` raises `ProfileError` for a board with no block, rather
+than inventing one from `boards.defaults` or another board's numbers — that
+would be the exact mistake this split exists to prevent. `main.py` calls
+`profile.require_boards()` on the active sources before a single request goes
+out, so a new source with no policy fails at the top of the run instead of
+silently scoring under the wrong floor twenty minutes in.
 
 ### `filters.py`
 
@@ -177,9 +227,18 @@ door, and over-calling mandatory removes jobs that were takeable. And a blocker
 **lowers, never rejects** — ads restate requirements they do not enforce, and
 only the candidate knows which. Raise `blocker_penalty` to bury them instead.
 
+A third category, `needs_manual_step`, is neither `blockers` nor
+`soft_blockers`, and it is deliberately never priced. A posting wanting a
+video intro or a test task is not worth fewer points — the work is perfectly
+winnable, it just cannot happen in the same sitting as everything else.
+Pricing it would bury exactly the jobs worth the extra hour. `blockers.evaluate()`
+(~line 96) derives it fresh from `profile.needs_manual_step` and never lets it
+touch `score` or `score_raw`; it only ever surfaces as a `BEFORE APPLYING:`
+line in the digest and a checklist at the top of the drafted letter.
+
 Measured 2026-08-31, and the split is the useful part: **OnlineJobs.ph asks for
-proof of work in 37% of listings, Himalayas in 5%.** A marketplace screens
-unknown freelancers; a job board lets the CV do it.
+proof of work (`work_samples`) in 21% of listings, Himalayas in 1%.** A
+marketplace screens unknown freelancers; a job board lets the CV do it.
 
 ### `store.py`
 
@@ -195,6 +254,20 @@ version, so filtering at write time would make history incomparable.
 The watermark is the last successful run, clamped by `MIN/MAX_LOOKBACK_HOURS`.
 Never reintroduce a fixed lookback window: v1 had `MAX_POST_AGE_HOURS = 1` on a
 daily schedule and therefore saw 1/24th of the board.
+
+### `digest.py` — per-board sections, staleness at render time only
+
+`BoardPolicy.max_age_days` is checked in `_partition()` when the digest
+renders, never at fetch or write time — same discipline as `display_threshold`
+above: nothing is ever deleted for being stale, so tightening or loosening the
+window and re-running costs nothing and rewrites no history.
+
+`_partition()` and `_score_key()` never pool jobs across boards, either. On
+this repo's own stored history, an identical rubric and model average 20.3 on
+himalayas (n=169, max 80) and 5.9 on onlinejobs (n=86, max 75) — a 3.4x gap.
+A single ranked list across boards would rank almost nothing except which
+board a job came from, so the digest renders one `## <board> — N listing(s)`
+section per board instead, each carrying its own `display_threshold`.
 
 ## Privacy split
 
@@ -233,8 +306,17 @@ the run only fails when every source failed.
 Set it `False` when the source's region field cannot be trusted to reject on.
 We Work Remotely marks jobs `<region>Anywhere in the World</region>` whose
 descriptions say *"only able to hire employees residing in British Columbia or
-Ontario"* — rejecting on that field would be fine, but *passing* on it means
-the model must read the description instead.
+Ontario"* — rejecting on an untrustworthy field would throw away real jobs, so
+`filters.evaluate()` reads the flag (via `sources.base.capability()`) and
+marks an empty, untrustworthy restriction list `Verdict.region_unverified`
+instead of accepting the silence as confirmed worldwide. `scorer.render_batch()`
+then tells the model, in that job's own block, that the silence is not
+evidence of anything.
+
+Note where that sentence goes. The caveat belongs in the job block, never in
+`build_system()`: the system block is cached byte-for-byte, and a per-board
+caveat living in a shared prefix would invalidate the cache on every batch
+that mixed two sources.
 
 Commit a fixture under `fixtures/` and a parse test. Parse functions must
 return `None` on unusable input, never raise: Himalayas deprecated `offset`

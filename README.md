@@ -58,9 +58,12 @@ flowchart TD
     SC -->|"score_raw + requirements"| BL
 
     BL["blockers.py<br/><i>local match against cannot_provide</i><br/><b>never sent to the API</b>"]
-    BL -->|"score after penalty"| D
+    BL -->|"score after penalty"| COV
 
-    D["digest.py<br/><i>markdown</i>"]
+    COV["cover.auto_draft()<br/><i>per-board draft_at, score-descending, capped</i>"]
+    COV --> D
+
+    D["digest.py<br/><i>sectioned per board — markdown</i>"]
     D --> ST["store.py<br/><i>SQLite</i>"]
     ST --> PU["push.py"]
     PU --> D1[("Cloudflare D1")]
@@ -83,6 +86,27 @@ Three things in that picture are the whole design:
   *asks for*; matching that against what you cannot supply happens locally. So
   the list never leaves the machine, and editing it re-prices the entire stored
   history with zero API calls.
+
+### Boards are isolated
+
+Himalayas and OnlineJobs.ph are different businesses with different hiring
+standards, so a score, a rate floor or an age limit from one tells you
+nothing about the other. Measured on this repo's own stored history under an
+identical rubric and the same model: Himalayas scored n=169, avg 20.3, max
+80; OnlineJobs scored n=86, avg 5.9, max 75 — a 3.4x gap in the average. A
+single ranked list across both would bury every OnlineJobs listing under
+Himalayas noise and call it fair.
+
+So every threshold, floor and age window lives per board in `profile.yaml`
+under `boards:` (see `profile.example.yaml`), and the digest is sectioned by
+board rather than pooled into one list. A board with no block there is a
+configuration gap, not a board that quietly inherits its neighbour's numbers
+— the run refuses to start rather than score it under the wrong rules.
+
+The age window (`max_age_days`) is one of those per-board numbers, and it is
+only ever applied when the digest renders, never when a job is fetched or
+stored. Nothing is deleted for being stale, so tightening or loosening the
+window and re-running costs nothing and rewrites no history.
 
 ### An earlier version of this repo did the opposite
 
@@ -110,6 +134,12 @@ Then edit `profile.yaml`. It holds your timezone, your rate floor, the regions
 that can hire you, the titles you want, and any employers you would rather not
 see. It is gitignored and never leaves your machine.
 
+Every board you run also needs its own block under `boards:` — a display
+threshold, a draft-at score and an age window — because none of those numbers
+means the same thing on two different boards (see "Boards are isolated"
+below). Leave a board's block out entirely and the run refuses to start
+rather than score it under someone else's numbers.
+
 Point `scoring.resume_path` at a plain-text or markdown copy of your CV, and
 put your key in `.env`:
 
@@ -127,6 +157,7 @@ py main.py --explain        # print every rejection and why
 py main.py --since 72h      # override the watermark
 py main.py --json           # also emit results as JSON on stdout
 py main.py --fast           # score with the cheaper model
+py main.py --no-cover       # skip auto-drafting letters for the high scorers
 ```
 
 There is no `--daily` flag. Point your OS scheduler at `py main.py` — the tool
@@ -145,10 +176,16 @@ py main.py --no-cover       # same run, no drafting
 
 Which jobs qualify is a per-board decision (`boards.<name>.draft_at`), because
 a score is only meaningful within the board that produced it. How much a very
-good day may cost is one global number, `config.COVER_MAX_PER_RUN`; the highest
-scorers take the slots and everything else stays available on demand below.
+good day may cost is one global number, `config.COVER_MAX_PER_RUN`, and those
+slots are shared out a board at a time — each board's best, then each board's
+second — so a board that scores generously cannot take every slot from one
+that does not. Everything past the cap stays available on demand below.
 
 A run never redrafts a letter it has already written, so re-running is free.
+Drafting is skipped entirely under `--dry-run` (nothing is persisted to point
+a draft at), `--no-llm` (nothing was scored), and `--no-cover`. One job
+failing to draft is logged and skipped, never lost — it does not discard the
+letters already written or fail the run.
 
 #### On demand
 
@@ -162,10 +199,14 @@ py cover.py <uid> --dry-run # print the prompt, call nothing, cost nothing
 py cover.py <uid> --force   # redraft over an existing file
 ```
 
-Drafts land in `data/covers/<uid>.md`, are never sent anywhere, and open with a
-banner saying so. If the posting asks for something in your `cannot_provide`
-list, the file says that first, before you spend time editing prose for a job
-you cannot apply to.
+Drafts land in `data/covers/`, one file per job, never sent anywhere, and open
+with a banner saying so. The filename is not the uid itself — a uid is
+`source:source_id`, and on Himalayas that id is the advert's full URL, so a
+raw uid is not a legal Windows filename. `cover.slug()` sanitises it and
+appends a short hash of the original, so two adverts that sanitise to the
+same string still land in different files. If the posting asks for something
+in your `cannot_provide` list, the file says that first, before you spend time
+editing prose for a job you cannot apply to.
 
 **This is deliberately not part of `py main.py`.** A run scores every survivor
 because ranking is what makes the digest worth opening. A letter is only worth
@@ -180,19 +221,38 @@ the banner on every draft says to read it before sending, and it means it.
 
 ## Output
 
-A markdown digest at `data/digest/YYYY-MM-DD.md`:
+A markdown digest at `data/digest/YYYY-MM-DD.md`, appended to rather than
+overwritten if a second run happens the same day — the second run usually
+finds nothing new, and overwriting would delete the morning's matches, which
+is worse than finding nothing. It is sectioned by board, never pooled, for
+the reason in "Boards are isolated" above:
 
 ```markdown
 # Job digest — 2026-08-24 09:05 UTC
 
-`244 fetched  -238 region  -1 employer  -3 role  2 to score`
+`412 fetched  -298 region  -41 salary  -9 role  64 to score`
 
-## No matches above 60
+_3 listing(s) hidden as stale by their board's own age window._
 
-2 job(s) were scored but none cleared the threshold:
+## himalayas — 1 listing(s)
 
-- **30** (Hudson Manpower) — Backend Developer Level III — Requires 8-10+ years
-  of production Kubernetes/Azure work that does not match this profile.
+_Showing score 60+ for this board._
+
+### Worth the ask — $35/hr+ or unstated
+
+### 54 (was 84) — Senior Backend Engineer
+
+**Acme Corp** · worldwide · posted 2026-08-24
+
+Strong Python and infra match, no location restriction stated.
+
+Matches: python, postgres, terraform
+🚫 Requires what you cannot supply: naming past clients.
+BEFORE APPLYING: a recorded video introduction.
+Salary: up to 96,000 USD/yr
+
+Draft letter: `data/covers/himalayas-acme-corp-9f2a1c04.md`
+CV to send: **engineering** · [apply](https://himalayas.app/companies/acme/jobs/backend)
 
 ## Near misses
 
@@ -204,10 +264,23 @@ Rejected latest in the chain — the most informative cuts.
 ```
 
 The funnel line and the near misses are load-bearing, not decoration. With a
-real rate floor, **most days legitimately return nothing**. An empty list with
-no explanation reads as a broken tool, and a tool that looks broken stops
-getting opened. Showing where the cut happened is usually more useful than the
-matches.
+real rate floor, **most days legitimately return nothing** — which renders as
+"No matches cleared their board's threshold", or "Nothing survived the
+filters" when even scoring found nobody. An empty list with no explanation
+reads as a broken tool, and a tool that looks broken stops getting opened.
+Showing where the cut happened is usually more useful than the matches.
+
+Two things worth knowing about one entry:
+
+- **Apply now vs. worth the ask** splits by `rate.inbound_floor_hourly_usd`,
+  not by score. Both groups are worth applying to; they differ only in
+  whether the rate is worth pushing back on.
+- **`54 (was 84)`** means a mandatory ask this profile flagged under
+  `deliverables.cannot_provide` docked the score by `blocker_penalty` — the
+  🚫 line under it says which. `BEFORE APPLYING:` is a different thing
+  entirely: it never touches the score, because a posting is not worth less
+  for wanting a video intro, it just cannot be applied to in the same sitting
+  as everything else.
 
 ## Project structure
 
@@ -217,7 +290,7 @@ config.py              constants, the requirement vocabulary, the user agent
 targeting.py           loads profile.yaml into a Profile
 filters.py             the deterministic funnel — the heart of it
 scorer.py              one batched Claude call per group of survivors
-cover.py               on-demand cover-letter draft for one stored job
+cover.py               drafts cover letters — auto for high scorers, on-demand by uid
 blockers.py            local match of asks against what you cannot supply
 report.py              what employers keep asking for, tallied over history
 digest.py              markdown rendering
@@ -241,14 +314,21 @@ agents that write most of it, is documented in
 
 ### Adding a source
 
-Implement `fetch(since) -> Iterator[Job]` and set `regions_authoritative`.
+Implement `fetch(since) -> Iterator[Job]` and override the capability flags
+(`regions_authoritative`, `salary_authoritative`, `publishes_expiry`) on your
+own source class where they differ from the `sources/base.py` defaults —
+facts about the feed, not tuning, so they live with the source rather than in
+`profile.yaml`.
 
-That flag is the one that matters. Himalayas publishes hiring regions you can
-reject on. We Work Remotely does not: a listing marked
+`regions_authoritative` is the one that matters most. Himalayas publishes
+hiring regions you can reject on. We Work Remotely does not: a listing marked
 `<region>Anywhere in the World</region>` was found to say, in its description,
-*"we are only able to hire employees residing in British Columbia or Ontario."*
-A source that lies must set the flag `False` so its region field informs the
-model instead of silently deleting jobs.
+*"we are only able to hire employees residing in British Columbia or
+Ontario."* Rejecting on an untrustworthy field would throw away real jobs, so
+a source that lies must set the flag `False`. An empty restriction list from
+that source is then carried forward as unverified rather than as confirmed
+worldwide, and the scorer is told so when it reads that job — silence from a
+board that never asks the question is not evidence of anything.
 
 ## Testing
 

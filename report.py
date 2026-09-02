@@ -57,15 +57,34 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
-def _where(args) -> tuple[str, list]:
+def _where(args, source=None) -> tuple[str, list]:
+    """`source` overrides `args.source` -- used to scope one board's own
+    section without re-parsing args. See `_boards_in`: a count or percentage
+    pooled across boards would blend, say, OnlineJobs asking for something in
+    37% of its listings into Himalayas' 5%, hiding exactly the split that
+    makes the number worth reading. Both figures are from this repo's own
+    store, 2026-09-02: 32 of 86 against 8 of 169."""
     clauses, params = [], []
-    if args.source:
+    board = args.source if source is None else source
+    if board:
         clauses.append("j.source = ?")
-        params.append(args.source)
+        params.append(board)
     if args.since is not None:
         clauses.append("j.created_at >= ?")
         params.append((datetime.now(UTC) - args.since).isoformat())
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+
+def _boards_in(conn, where: str, params: list) -> list[str]:
+    """Distinct boards present in the current filter, sorted.
+
+    Every listing/tally view sections by this instead of pooling: a score, a
+    rate, or a percentage is only meaningful within the board that produced
+    it (see targeting.BoardPolicy).
+    """
+    return [r["source"] for r in conn.execute(
+        f"SELECT DISTINCT j.source FROM jobs j{where} ORDER BY j.source", params
+    )]
 
 
 def _bar(n: int, top: int, width: int = 22) -> str:
@@ -156,6 +175,43 @@ def main() -> int:
               f"cannot_provide={sorted(profile.cannot_provide)} "
               f"at -{profile.blocker_penalty}/blocker")
         print(f"{changed} score(s) changed. Push to the dashboard with: py push.py")
+
+        # manual_steps is the third, deliberately unpriced category: a job
+        # that asks for a video intro or a test task is fully winnable, just
+        # not in one sitting, so it never touches score or score_raw -- it is
+        # re-derived here, live, from ALL requirement kinds against
+        # needs_manual_step, not just the mandatory ones (a "nice to have"
+        # test task still costs the same evening as a required one; see
+        # blockers.evaluate). Sectioned by board like every other listing
+        # view here -- --source/--since narrow which rows print, they do not
+        # touch the re-pricing above, which stays global by design.
+        if profile.needs_manual_step:
+            marks = ",".join("?" * len(profile.needs_manual_step))
+            manual_boards = _boards_in(conn, where, params)
+            manual_total = 0
+            for board_name in manual_boards:
+                board_where, board_params = _where(args, source=board_name)
+                manual_rows = conn.execute(
+                    "SELECT j.uid, j.title, j.company,"
+                    " GROUP_CONCAT(r.kind) AS kinds"
+                    f" FROM jobs j JOIN job_requirements r ON r.uid = j.uid{board_where}"
+                    f" AND r.kind IN ({marks})"
+                    " GROUP BY j.uid ORDER BY j.created_at DESC",
+                    board_params + sorted(profile.needs_manual_step),
+                ).fetchall()
+                if not manual_rows:
+                    continue
+                manual_total += len(manual_rows)
+                print(f"\n## {board_name} — {len(manual_rows)} stored job(s) need a manual "
+                      f"step before applying (needs_manual_step="
+                      f"{sorted(profile.needs_manual_step)}, never priced):")
+                for r in manual_rows:
+                    print(f"  {r['title'][:52]}  ({r['company'] or 'unknown'}) "
+                          f"needs: {r['kinds']}")
+            if not manual_total:
+                print(f"\n0 stored job(s) need a manual step before applying "
+                      f"(needs_manual_step={sorted(profile.needs_manual_step)}, never priced)")
+
         conn.close()
         return 0
 
@@ -165,22 +221,34 @@ def main() -> int:
             print(f"unknown kind {args.detail!r}. Valid: "
                   + ", ".join(sorted(config.REQUIREMENT_KINDS)), file=sys.stderr)
             return 1
-        rows = conn.execute(
-            f"SELECT j.title, j.company, j.source, r.mandatory, r.detail"
-            f" FROM job_requirements r JOIN jobs j ON j.uid = r.uid{where}"
-            + (" AND" if where else " WHERE") + " r.kind = ?"
-            " ORDER BY r.mandatory DESC, j.created_at DESC",
-            params + [args.detail],
-        ).fetchall()
         print(f"\n{args.detail} — {config.REQUIREMENT_KINDS[args.detail]}")
-        print(f"{len(rows)} listing(s)\n")
-        for r in rows:
-            mark = "MUST" if r["mandatory"] else "nice"
-            print(f"  [{mark}] {r['title'][:56]}")
-            if r["company"]:
-                print(f"         {r['company']} · {r['source']}")
-            if r["detail"]:
-                print(f"         \"{r['detail']}\"")
+        # Sectioned by board, same as every other listing view (_boards_in):
+        # a company is only ever known for himalayas rows, so printing the
+        # board only when company is set silently dropped it for every
+        # onlinejobs listing.
+        boards = _boards_in(conn, where, params)
+        total = 0
+        for board_name in boards:
+            board_where, board_params = _where(args, source=board_name)
+            rows = conn.execute(
+                f"SELECT j.title, j.company, r.mandatory, r.detail"
+                f" FROM job_requirements r JOIN jobs j ON j.uid = r.uid{board_where}"
+                " AND r.kind = ?"
+                " ORDER BY r.mandatory DESC, j.created_at DESC",
+                board_params + [args.detail],
+            ).fetchall()
+            if not rows:
+                continue
+            total += len(rows)
+            print(f"\n## {board_name} — {len(rows)} listing(s)")
+            for r in rows:
+                mark = "MUST" if r["mandatory"] else "nice"
+                print(f"  [{mark}] {r['title'][:56]}")
+                print(f"         {r['company'] or 'unknown'} · {board_name}")
+                if r["detail"]:
+                    print(f"         \"{r['detail']}\"")
+        if not total:
+            print("0 listing(s)")
         conn.close()
         return 0
 
@@ -191,78 +259,108 @@ def main() -> int:
             conn.close()
             return 0
         marks = ",".join("?" * len(profile.cannot_provide))
-        rows = conn.execute(
-            f"SELECT j.title, j.company, j.source, j.score, j.score_raw,"
-            f" GROUP_CONCAT(r.kind) AS kinds"
-            f" FROM jobs j JOIN job_requirements r ON r.uid = j.uid{where}"
-            + (" AND" if where else " WHERE")
-            + f" r.mandatory = 1 AND r.kind IN ({marks})"
-            " GROUP BY j.uid ORDER BY j.score_raw DESC",
-            params + sorted(profile.cannot_provide),
-        ).fetchall()
-        print(f"\n{len(rows)} listing(s) you cannot currently apply to\n")
-        for r in rows:
-            raw, adj = r["score_raw"], r["score"]
-            move = f"{raw} -> {adj}" if raw is not None and raw != adj else str(adj)
-            print(f"  {move:>10}  {r['title'][:52]}")
-            print(f"              {r['company'] or 'unknown'} · {r['source']} · needs: {r['kinds']}")
+        boards = _boards_in(conn, where, params)
+        total = 0
+        # Sectioned by board and ranked within it, never pooled: score_raw is
+        # only comparable to another score_raw from the SAME board (see
+        # digest._partition), so one list ordered across boards would rank a
+        # Himalayas 40 above an OnlineJobs 20 for no reason the numbers mean.
+        for board_name in boards:
+            board_where, board_params = _where(args, source=board_name)
+            rows = conn.execute(
+                f"SELECT j.title, j.company, j.score, j.score_raw,"
+                f" GROUP_CONCAT(r.kind) AS kinds"
+                f" FROM jobs j JOIN job_requirements r ON r.uid = j.uid{board_where}"
+                f" AND r.mandatory = 1 AND r.kind IN ({marks})"
+                " GROUP BY j.uid ORDER BY j.score_raw DESC",
+                board_params + sorted(profile.cannot_provide),
+            ).fetchall()
+            if not rows:
+                continue
+            total += len(rows)
+            print(f"\n## {board_name} — {len(rows)} listing(s) you cannot currently apply to")
+            for r in rows:
+                raw, adj = r["score_raw"], r["score"]
+                move = f"{raw} -> {adj}" if raw is not None and raw != adj else str(adj)
+                print(f"  {move:>10}  {r['title'][:52]}")
+                print(f"              {r['company'] or 'unknown'} · needs: {r['kinds']}")
+        if not total:
+            print("\n0 listing(s) you cannot currently apply to")
         conn.close()
         return 0
 
-    # Default: the tally.
-    rows = conn.execute(
-        f"SELECT r.kind,"
-        f" COUNT(*) AS listings,"
-        f" SUM(r.mandatory) AS must"
-        f" FROM job_requirements r JOIN jobs j ON j.uid = r.uid{where}"
-        " GROUP BY r.kind ORDER BY listings DESC, must DESC",
-        params,
-    ).fetchall()
+    # Default: the tally, sectioned by board. A percentage pooled across
+    # boards blends, say, OnlineJobs asking for something in 37% of its
+    # listings into Himalayas' 5% -- 32 of 86 against 8 of 169 on this repo's
+    # own store, and exactly what a single blended figure would hide.
+    boards = _boards_in(conn, where, params)
 
-    if not rows:
+    # Collected before the header prints: the "no requirements recorded"
+    # message below is itself a header-less body, so printing the header up
+    # front produced one with nothing under it whenever every board came back
+    # empty.
+    board_data = []
+    for board_name in boards:
+        board_where, board_params = _where(args, source=board_name)
+        rows = conn.execute(
+            f"SELECT r.kind,"
+            f" COUNT(*) AS listings,"
+            f" SUM(r.mandatory) AS must"
+            f" FROM job_requirements r JOIN jobs j ON j.uid = r.uid{board_where}"
+            " GROUP BY r.kind ORDER BY listings DESC, must DESC",
+            board_params,
+        ).fetchall()
+        if not rows:
+            continue
+        board_scored = conn.execute(
+            f"SELECT COUNT(*) AS n FROM jobs j{board_where}", board_params
+        ).fetchone()["n"]
+        covered = conn.execute(
+            f"SELECT COUNT(DISTINCT r.uid) AS n FROM job_requirements r"
+            f" JOIN jobs j ON j.uid = r.uid{board_where}", board_params
+        ).fetchone()["n"]
+        board_data.append((board_name, board_where, board_params, rows, board_scored, covered))
+
+    if not board_data:
         print(f"{scored} scored job(s), but no requirements recorded yet.\n"
               "Requirements are extracted during scoring, so only runs made after\n"
               "this feature landed have them. Re-run with: py main.py --rescore")
         conn.close()
         return 0
 
-    covered = conn.execute(
-        f"SELECT COUNT(DISTINCT r.uid) AS n FROM job_requirements r"
-        f" JOIN jobs j ON j.uid = r.uid{where}", params
-    ).fetchone()["n"]
-
-    top = max(r["listings"] for r in rows)
-    scope = []
-    if args.source:
-        scope.append(args.source)
-    if args.since is not None:
-        scope.append(f"last {args.since.days or 1}d")
+    scope = ([args.source] if args.source else []) \
+        + ([f"last {args.since.days or 1}d"] if args.since is not None else [])
     header = "WHAT EMPLOYERS ASK YOU TO PRODUCE"
     if scope:
         header += "  (" + ", ".join(scope) + ")"
-
     print("\n" + header)
-    print(f"{covered} of {scored} scored listings asked for something.\n")
-    print(f"  {'':<23}{'ads':>5} {'must':>5}  {'':<22}")
-    for r in rows:
-        kind, n, must = r["kind"], r["listings"], r["must"] or 0
-        flag = " <- YOU CANNOT PROVIDE" if kind in profile.cannot_provide else ""
-        pct = n / scored * 100
-        print(f"  {kind:<23}{n:>5} {must:>5}  {_bar(n, top)}  {pct:4.0f}%{flag}")
+
+    for board_name, board_where, board_params, rows, board_scored, covered in board_data:
+        top = max(r["listings"] for r in rows)
+
+        print(f"\n## {board_name} — {covered} of {board_scored} scored listings asked for something")
+        print(f"  {'':<23}{'ads':>5} {'must':>5}  {'':<22}")
+        for r in rows:
+            kind, n, must = r["kind"], r["listings"], r["must"] or 0
+            flag = " <- YOU CANNOT PROVIDE" if kind in profile.cannot_provide else ""
+            pct = n / board_scored * 100
+            print(f"  {kind:<23}{n:>5} {must:>5}  {_bar(n, top)}  {pct:4.0f}%{flag}")
+
+        if profile.cannot_provide:
+            board_blocked = conn.execute(
+                f"SELECT COUNT(DISTINCT r.uid) AS n FROM job_requirements r"
+                f" JOIN jobs j ON j.uid = r.uid{board_where}"
+                f" AND r.mandatory = 1 AND r.kind IN ({','.join('?' * len(profile.cannot_provide))})",
+                board_params + sorted(profile.cannot_provide),
+            ).fetchone()["n"]
+            print(f"  {board_blocked} listing(s) ({board_blocked / board_scored * 100:.0f}%) "
+                  f"blocked for you today on {board_name} — each loses {profile.blocker_penalty} "
+                  f"points per unmet condition.")
 
     print("\n  ads  = listings that asked for it at all")
     print("  must = listings that made it a condition, not a preference")
 
     if profile.cannot_provide:
-        blocked = conn.execute(
-            f"SELECT COUNT(DISTINCT r.uid) AS n FROM job_requirements r"
-            f" JOIN jobs j ON j.uid = r.uid{where}"
-            + (" AND" if where else " WHERE")
-            + f" r.mandatory = 1 AND r.kind IN ({','.join('?' * len(profile.cannot_provide))})",
-            params + sorted(profile.cannot_provide),
-        ).fetchone()["n"]
-        print(f"\n  {blocked} listing(s) ({blocked / scored * 100:.0f}%) are blocked for you today"
-              f" — each loses {profile.blocker_penalty} points per unmet condition.")
         print("  py report.py --blocked          which ones")
     else:
         print("\n  Nothing flagged yet. Add the keys you cannot supply to profile.yaml:")

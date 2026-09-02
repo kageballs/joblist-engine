@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import pathlib
@@ -225,7 +226,7 @@ def auto_draft(pairs, profile, api_key, log=print) -> int:
     Selection is per board, because a score is only meaningful within the board
     that produced it: 70 is a rare top result on one board and unremarkable on
     another. A single global cap then bounds the spend regardless of how good a
-    day it was, and the highest scorers take the slots.
+    day it was, and the slots are shared out a board at a time.
 
     Never raises. Drafting is a convenience layered on a run that has already
     succeeded; it must not be able to fail that run.
@@ -242,8 +243,27 @@ def auto_draft(pairs, profile, api_key, log=print) -> int:
         if score >= board.draft_at:
             candidates.append((score, verdict, result))
 
-    candidates.sort(key=lambda c: -c[0])
-    todo = [c for c in candidates if not out_path(c[1].job.key).exists()]
+    # The cap is shared out round-robin -- each board's best undrafted job, then
+    # each board's second, and so on -- never by one list sorted across boards.
+    # A global sort silently reintroduces the comparison this whole design
+    # exists to prevent: on real history one board averages 20.3 and the other
+    # 5.9, so ranking them together hands every slot to the generous board and
+    # starves the board where clearing draft_at was the harder thing to do.
+    # Within a board the ranking is real, so there it is highest-first.
+    by_board: dict[str, list] = {}
+    for candidate in candidates:
+        if out_path(candidate[1].job.key).exists():
+            continue
+        by_board.setdefault(candidate[1].job.source, []).append(candidate)
+    for rows in by_board.values():
+        rows.sort(key=lambda c: -c[0])
+
+    todo = [
+        c
+        for tier in itertools.zip_longest(*(by_board[b] for b in sorted(by_board)))
+        for c in tier
+        if c is not None
+    ]
     skipped = len(candidates) - len(todo)
     capped = todo[: config.COVER_MAX_PER_RUN]
 

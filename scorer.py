@@ -177,7 +177,21 @@ def render_batch(verdicts) -> str:
     lines = []
     for i, v in enumerate(verdicts):
         job = v.job
-        regions = ", ".join(job.location_restrictions) or "none stated (worldwide)"
+        # Silence means two different things depending on the board. Where the
+        # region field is authoritative, stating nothing really does mean
+        # worldwide. Where it is not, stating nothing means the board never
+        # asked -- and reading that as "worldwide" invents an eligibility the
+        # advert never claimed. Said in the job block rather than the system
+        # prompt on purpose: the system block is cached byte-for-byte, and a
+        # per-board caveat has no business in a shared prefix.
+        regions = ", ".join(job.location_restrictions)
+        if not regions:
+            regions = (
+                "none stated, and this board's region field is not reliable "
+                "-- do NOT assume worldwide"
+                if v.region_unverified
+                else "none stated (worldwide)"
+            )
         salary = "not stated"
         annual = job.annual_usd_max()
         if annual:
