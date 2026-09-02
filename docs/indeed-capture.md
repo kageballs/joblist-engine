@@ -1,12 +1,12 @@
 # Capturing Indeed
 
-> **Status: the capture half only.** `sources/indeed.py` does not exist yet,
-> and neither does an `indeed:` block in `profile.yaml`. Capturing today gives
-> you a JSON file and nothing that reads it — and because
-> `Profile.board("indeed")` raises for an undeclared board, adding the source
-> before declaring its policy would abort the run rather than silently guess.
-> This document exists so the capture format is settled before the parser is
-> written against it.
+> **Status: measured, and not recommended. Nothing is built.**
+> `sources/indeed.py` does not exist, and neither does an `indeed:` block in
+> `profile.yaml`. Read "What the measurement found" below before writing
+> either — on a real sample, **15 of 15** US listings were hireable only from
+> the United States, which this profile's region stage would reject in full.
+> The capture mechanics below are correct and were tested; the open question
+> is whether the board is worth capturing at all.
 
 Indeed is the one board this tool cannot fetch by itself, and that is a
 property of Indeed rather than a gap in the code. A plain `requests` GET —
@@ -83,10 +83,10 @@ Then evaluate this in the page. It returns JSON; write it to
   const isTracking = (k) => words(k).some((w) => TRACKING_WORDS.has(w));
 
   // A tracking token is a long unbroken run of URL-safe characters with no
-  // spaces. Testing for "?" and "=" instead would blank every description on
-  // the page: Indeed's `snippet` is HTML so it always contains "=", and any
-  // advert asking "Ready to join?" contains both. The 24-char floor also
-  // keeps `jobkey`, which is shorter and which the URL is rebuilt from.
+  // spaces. An earlier version tested for "?" and "=" instead, which blanks
+  // any prose containing a question mark and an attribute — fatal once this
+  // is pointed at the job page, whose description IS HTML. The 24-char floor
+  // also keeps `jobkey`, which is shorter and which the URL is rebuilt from.
   const TOKENISH = /^[A-Za-z0-9_-]{24,}$/;
 
   const scrub = (v) => {
@@ -139,12 +139,82 @@ Written down now so the two halves cannot drift apart:
 - **A capture is a photograph, not a feed.** `captured_at` must be read, and a
   capture older than the board's own `max_age_days` has nothing left to say.
   The posting dates inside it are still subject to that window regardless.
-- **`sources/indeed.py` must declare its capability flags honestly.** Indeed
-  publishes no reliable worldwide-remote field, so `regions_authoritative`
-  will be `False` — which is what makes `scorer.render_batch()` tell the model
-  not to read an empty region list as "worldwide".
+- **The two pages deserve different capability flags.** The search model has
+  no hiring-region field at all and an *inferred* salary, so a source built on
+  it alone would set `regions_authoritative = False` and
+  `salary_authoritative = False`. The job page publishes
+  `applicantLocationRequirements`, `baseSalary` and `validThrough`, which
+  would earn `True`, `True` and `publishes_expiry = True`. Do not average the
+  two: declare the flags for whichever page the source actually reads.
 - **An `indeed:` block in `profile.yaml` is mandatory before the source is
   registered**, with its own floor and thresholds. That is the isolation rule:
   the board cannot inherit another board's tuning.
 - **Parse functions return `None` on unusable input, never raise.** A capture
   taken while Indeed was mid-experiment is expected, not exceptional.
+
+## What the measurement found
+
+Probed 2026-09-03 from a real Chrome session. These numbers are the reason
+this document ends in a recommendation rather than a parser.
+
+### The search page carries no advert text
+
+`mosaicProviderJobCardsModel.results[]` is rich — title, company, location,
+`pubDate`, `extractedSalary`, `remoteWorkModel`, `expired` — but its `snippet`
+field was **empty on all 15 cards**, and the page has no snippet nodes in the
+DOM either. So a search capture alone cannot feed the scorer: with no
+description there is nothing for `eligibility_sentences()` to read, nothing
+for the model to extract requirements from, and nothing to draft a letter
+against. Indeed is therefore a two-request board at minimum: the search page,
+then one page per surviving job.
+
+Its `salarySnippet.source` was `EXTRACTION` on all 15 — Indeed inferred those
+figures from the advert text rather than the employer declaring them. A board
+whose salary is inferred is exactly the case `salary_authoritative = False`
+exists for; rejecting on it would discard jobs on Indeed's parsing mistakes.
+
+### The job page carries a real contract
+
+`/viewjob?jk=<key>` embeds a schema.org `JobPosting` in
+`<script type="application/ld+json">`, with `description`,
+`applicantLocationRequirements`, `baseSalary`, `datePosted`, `validThrough`
+and `employmentType`.
+
+Parse that, not the DOM. The rendered description sits in a container whose
+only handle is a hashed CSS-in-JS class (`css-g5y9jx` on the day of the
+probe); `#jobDescriptionText` and every other documented Indeed selector are
+gone. A hashed class changes on the next deploy, where the JSON-LD block is a
+published standard.
+
+`applicantLocationRequirements` is a genuinely authoritative hiring-region
+field, better than what most boards publish, and `validThrough` means
+`publishes_expiry` would be `True`. Those flags belong on the **job page**
+path; the search page deserves neither.
+
+### And that authoritative field is what kills it
+
+Sampled all 15 results of `q=python+developer&l=Remote&fromage=7` on
+indeed.com, reading `applicantLocationRequirements` from each job page:
+
+```
+United States   15
+anything else    0
+```
+
+`filters.stage_region` would reject 100% of that sample. Building the source
+would produce a funnel whose correct output is zero rows.
+
+`ph.indeed.com` is the site that would actually serve this profile, and it is
+a different proposition: the same query returned **6** cards rather than 15,
+locations were `Work from Home` and `Philippines`, the sampled card carried no
+salary at all, and the job-page fetch that worked on the US site answered
+**403 Security Check** there. Thinner inventory, less structured data, and a
+harder fetch.
+
+### Recommendation
+
+Do not build this yet. It is not a legal or robots question — that was settled
+separately — it is that the US site fails the region stage completely and the
+PH site offers less than `sources/onlinejobs.py` already covers for the same
+market. If it is revisited, revisit `ph.indeed.com` specifically, and measure
+inventory over a week before writing a parser.
