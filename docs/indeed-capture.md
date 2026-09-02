@@ -230,10 +230,63 @@ ordinary access to a job board during a job hunt.
 Nothing in this repo has that property today. Himalayas is a JSON feed,
 OnlineJobs is ordinary HTML, and neither retaliates.
 
+### ph.indeed.com measured properly, and it changes the answer
+
+The US numbers above do not transfer. Measured on `ph.indeed.com`, which is
+the site that would actually serve this profile:
+
+| | |
+|---|---|
+| `q=automation&l=Remote&fromage=7` | 14 cards, all `country: PH`, all `REMOTE_ALWAYS` |
+| same query at `fromage=14` | 15 cards |
+| `"work from home" developer`, 7d | 7 cards |
+| Companies already in this store | **1 of 16** |
+| Job-page description | 10,345 characters, full advert |
+
+The roles are the right ones -- AI Engineer, Backend Engineer, DevOps
+Engineer, a GoHighLevel specialist, a Salesforce BA -- and GoHighLevel work is
+this profile's single highest scorer anywhere at 75. Fifteen of sixteen
+sampled employers appear nowhere in the existing store, so this is close to
+entirely new inventory rather than OnlineJobs reposted.
+
+**But the funnel inverts here, and that is the real objection.** A PH job page
+carries `description`, `datePosted` and `validThrough` -- and no `baseSalary`
+and no `applicantLocationRequirements` at all. The search card states pay on
+roughly 7% of listings. So on this board:
+
+- region rejects nothing, exactly as on OnlineJobs, because both are domestic
+- salary rejects nothing either, because it is simply absent
+
+For contrast, on the stored history `filters.py` rejected 512 OnlineJobs
+listings and **510 of those were the salary stage** -- 99.6% of all the free
+work done on that board. OnlineJobs survives because OLJ puts pay in a text
+box on nearly every advert, badly formatted but present, and `parse_salary()`
+rescues it. Indeed does not state it at all, before or after hydration.
+
+So every fetched Indeed listing would reach the model, with nothing removed
+for free. That is the v1 architecture this rewrite deleted.
+
+What rescues it is the thing that first looked like a weakness: the board is
+thin. Roughly 15 results per query per week is a single scoring batch, and a
+funnel that filters nothing is only ruinous at Himalayas' 2400-per-run scale.
+At this volume the arithmetic is affordable.
+
 ### Recommendation
 
-Do not build this yet. It is not a legal or robots question — that was settled
-separately — it is that the US site fails the region stage completely and the
-PH site offers less than `sources/onlinejobs.py` already covers for the same
-market. If it is revisited, revisit `ph.indeed.com` specifically, and measure
-inventory over a week before writing a parser.
+Viable on `ph.indeed.com`, not worth it on `indeed.com`, and blocked on
+something other than economics.
+
+The US site fails outright: 15 of 15 sampled listings hire only from the
+United States. Do not build against it.
+
+The PH site is a genuine source of relevant, almost entirely new listings with
+full advert text. The obstacle is not cost and not the region stage, it is
+that **the capture cannot be automated from inside this repo**. Reading the
+board needs a real browser session, `main.py` cannot drive one, and so Indeed
+can never be a source in the sense the other two are. It would be a manual
+step producing a file, on a board where nothing filters for free.
+
+If that trade is acceptable, build it as a capture-plus-parser and keep the
+per-run volume small and the pacing slow -- the verification wall in the
+previous section arrived after about twenty job-page requests in a couple of
+minutes, and it arrives on the operator's own address.
