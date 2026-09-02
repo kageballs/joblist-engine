@@ -13,6 +13,8 @@ py main.py --since 72h      # override the watermark
 py main.py --source onlinejobs   # one source only
 py main.py --rescore        # re-evaluate jobs already marked seen
 
+py main.py --no-cover       # run without auto-drafting letters
+
 py cover.py <uid>           # draft a cover letter for one stored job
 py cover.py --top 5         # draft for the 5 highest-scoring stored jobs
 py cover.py <uid> --dry-run # print the prompt, call nothing

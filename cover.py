@@ -198,6 +198,94 @@ def out_path(uid: str) -> pathlib.Path:
     return pathlib.Path(config.COVER_DIR) / f"{slug(uid)}.md"
 
 
+def row_from(verdict, result) -> dict:
+    """Adapt an in-flight (Verdict, result) pair to the shape a draft needs.
+
+    A run drafts BEFORE anything is written to SQLite, so there is no `jobs`
+    row to read yet. Drafting after the write would be tidier, but it would
+    also mean a job that failed to store silently loses its letter.
+    """
+    job = verdict.job
+    return {
+        "uid": job.key,
+        "title": job.title,
+        "company": job.company,
+        "source": job.source,
+        "url": job.url,
+        "description": job.description,
+        "why": result.get("why") or "",
+        "score": result.get("score"),
+        "blockers": json.dumps(result.get("blockers") or []),
+    }
+
+
+def auto_draft(pairs, profile, api_key, log=print) -> int:
+    """Draft letters for the high scorers of a run. Returns how many were written.
+
+    Selection is per board, because a score is only meaningful within the board
+    that produced it: 70 is a rare top result on one board and unremarkable on
+    another. A single global cap then bounds the spend regardless of how good a
+    day it was, and the highest scorers take the slots.
+
+    Never raises. Drafting is a convenience layered on a run that has already
+    succeeded; it must not be able to fail that run.
+    """
+    candidates = []
+    for verdict, result in pairs:
+        score = result.get("score")
+        if score is None:
+            continue
+        try:
+            board = profile.board(verdict.job.source)
+        except Exception:  # noqa: BLE001 - an unconfigured board just does not draft
+            continue
+        if score >= board.draft_at:
+            candidates.append((score, verdict, result))
+
+    candidates.sort(key=lambda c: -c[0])
+    todo = [c for c in candidates if not out_path(c[1].job.key).exists()]
+    skipped = len(candidates) - len(todo)
+    capped = todo[: config.COVER_MAX_PER_RUN]
+
+    if not capped:
+        if skipped:
+            log(f"[cover] {skipped} qualifying job(s) already drafted; nothing new")
+        return 0
+
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+        system = build_system(profile)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[cover] skipped, could not start the client: {exc}")
+        return 0
+
+    pathlib.Path(config.COVER_DIR).mkdir(parents=True, exist_ok=True)
+    if len(todo) > len(capped):
+        log(f"[cover] {len(todo)} qualify, drafting the top {len(capped)} "
+            f"(COVER_MAX_PER_RUN); the rest are available via `py cover.py <uid>`")
+
+    written = 0
+    for score, verdict, result in capped:
+        row = row_from(verdict, result)
+        requirements = result.get("requirements") or []
+        try:
+            letter = draft(client, config.COVER_MODEL, system, row, requirements)
+        except Exception as exc:  # noqa: BLE001 - one failure must not lose the rest
+            log(f"[cover] failed {verdict.job.title[:44]}: {type(exc).__name__}: {exc}")
+            continue
+        target = out_path(row["uid"])
+        steps = live_manual_steps(requirements, profile)
+        target.write_text(
+            render(row, letter, live_blockers(row, profile), steps), encoding="utf-8"
+        )
+        written += 1
+        flag = "  needs: " + ", ".join(steps) if steps else ""
+        log(f"[cover] {score}  {verdict.job.title[:44]}  -> {target.name}{flag}")
+    return written
+
+
 def live_manual_steps(requirements, profile) -> list[str]:
     """What this posting demands that costs work but not points.
 

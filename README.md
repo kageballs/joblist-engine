@@ -135,6 +135,23 @@ caught up automatically rather than silently skipped.
 
 ### Drafting a cover letter
 
+High scorers are drafted automatically as part of a normal run, so the letter
+is already waiting when you open the digest:
+
+```bash
+py main.py                  # scores, then drafts for whatever cleared draft_at
+py main.py --no-cover       # same run, no drafting
+```
+
+Which jobs qualify is a per-board decision (`boards.<name>.draft_at`), because
+a score is only meaningful within the board that produced it. How much a very
+good day may cost is one global number, `config.COVER_MAX_PER_RUN`; the highest
+scorers take the slots and everything else stays available on demand below.
+
+A run never redrafts a letter it has already written, so re-running is free.
+
+#### On demand
+
 Once a listing is worth applying to, draft the letter against the advert that
 was actually stored:
 

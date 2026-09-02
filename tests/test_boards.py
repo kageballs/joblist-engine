@@ -321,3 +321,121 @@ def test_manual_steps_are_re_derived_from_the_live_profile(profile):
 
     requirements = [{"kind": "video_intro"}, {"kind": "degree"}]
     assert cover.live_manual_steps(requirements, profile) == ["video_intro"]
+
+
+# --- auto-drafting: per-board selection, globally capped -----------------
+
+
+class _FakeClient:
+    def __init__(self, fail_on=None):
+        self.calls = []
+        self.fail_on = fail_on
+        outer = self
+
+        class _M:
+            def create(self, **kw):
+                outer.calls.append(kw)
+                if outer.fail_on and len(outer.calls) == outer.fail_on:
+                    raise RuntimeError("rate limited")
+                block = type("B", (), {"type": "text", "text": "Letter body."})()
+                return type("R", (), {"content": [block]})()
+
+        self.messages = _M()
+
+
+def _wire_cover(monkeypatch, tmp_path, client):
+    import cover
+    monkeypatch.setattr(cover.config, "COVER_DIR", str(tmp_path / "covers"))
+    monkeypatch.setitem(
+        __import__("sys").modules, "anthropic",
+        __import__("types").SimpleNamespace(Anthropic=lambda **kw: client, APIError=Exception),
+    )
+
+
+def test_selection_uses_each_boards_own_draft_threshold(profile, tmp_path, monkeypatch):
+    """70 qualifies on a board whose bar is 70, not on one whose bar is 90."""
+    import cover
+
+    path = _write_profile(tmp_path, lambda raw: raw["boards"].update(
+        {"himalayas": {"draft_at": 70}, "onlinejobs": {"draft_at": 90}}))
+    profile = targeting.load(path)
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+
+    pairs = [_pair(profile, "himalayas", 70), _pair(profile, "onlinejobs", 70)]
+    written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+
+    assert written == 1
+    assert len(client.calls) == 1, "the 90-bar board must not have been drafted"
+
+
+def test_the_global_cap_bounds_a_good_day(profile, tmp_path, monkeypatch):
+    import cover
+
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+    monkeypatch.setattr(cover.config, "COVER_MAX_PER_RUN", 2)
+
+    pairs = [_pair(profile, "himalayas", s) for s in (72, 95, 80, 71, 88)]
+    written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+
+    assert written == 2
+    drafted_titles = [c["messages"][0]["content"] for c in client.calls]
+    assert len(drafted_titles) == 2, "must stop at the cap, not draft all five"
+
+
+def test_the_cap_gives_the_slots_to_the_highest_scorers(profile, tmp_path, monkeypatch):
+    import cover
+
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+    monkeypatch.setattr(cover.config, "COVER_MAX_PER_RUN", 1)
+
+    pairs = [_pair(profile, "himalayas", 71), _pair(profile, "himalayas", 99)]
+    # Distinguish them by uid so the written file can be identified.
+    pairs[1][0].job = pairs[1][0].job.__class__(
+        **{**pairs[1][0].job.__dict__, "source_id": "top"})
+    cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+
+    written = list((tmp_path / "covers").glob("*.md"))
+    assert len(written) == 1
+    assert "top" in written[0].name, "the 99 should have taken the only slot"
+
+
+def test_one_failure_does_not_lose_the_other_drafts(profile, tmp_path, monkeypatch):
+    import cover
+
+    client = _FakeClient(fail_on=2)
+    _wire_cover(monkeypatch, tmp_path, client)
+
+    pairs = [_pair(profile, "himalayas", 90), _pair(profile, "himalayas", 80)]
+    pairs[1][0].job = pairs[1][0].job.__class__(
+        **{**pairs[1][0].job.__dict__, "source_id": "second"})
+    written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+
+    assert written == 1, "the surviving draft must still be written"
+    assert len(list((tmp_path / "covers").glob("*.md"))) == 1
+
+
+def test_an_unscored_job_is_never_drafted(profile, tmp_path, monkeypatch):
+    import cover
+
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+    verdict, result = _pair(profile, "himalayas", 90)
+    result["score"] = None
+
+    assert cover.auto_draft([(verdict, result)], profile, "sk-test", log=lambda m: None) == 0
+    assert client.calls == []
+
+
+def test_an_already_drafted_job_is_not_redrafted(profile, tmp_path, monkeypatch):
+    import cover
+
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+    pairs = [_pair(profile, "himalayas", 90)]
+
+    assert cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None) == 1
+    assert cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None) == 0
+    assert len(client.calls) == 1, "a second run must not pay for the same letter twice"

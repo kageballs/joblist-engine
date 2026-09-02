@@ -11,8 +11,10 @@ Usage:
     py main.py --rescore        re-evaluate already-seen jobs in the window
     py main.py --json           also print results as JSON on stdout
     py main.py --fast           score with the cheaper model
+    py main.py --no-cover       skip auto-drafting letters for the high scorers
 
 Progress goes to stderr, results to stdout, the digest to data/digest/.
+Cover letter drafts go to data/covers/, one per high-scoring job.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 
 import blockers as blockers_mod
 import config
+import cover
 import digest as digest_mod
 import filters
 import targeting
@@ -74,6 +77,8 @@ def main() -> int:
     parser.add_argument("--explain", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--fast", action="store_true")
+    parser.add_argument("--no-cover", action="store_true",
+                        help="skip auto-drafting cover letters for high scorers")
     parser.add_argument("--since", type=parse_since, default=None)
     parser.add_argument("--source", default=None,
                         help="run only this source (himalayas | onlinejobs)")
@@ -200,6 +205,9 @@ def main() -> int:
 
     results: list[dict] = []
     model_used = "none"
+    # Bound here rather than inside the scoring branch: auto-drafting reads it
+    # further down, and an empty `fresh` would otherwise leave it undefined.
+    api_key = ""
     if fresh and not args.no_llm:
         api_key = load_api_key()
         if not api_key:
@@ -226,6 +234,16 @@ def main() -> int:
 
     # scorer.score() pads to len(fresh), so a length mismatch is a real bug.
     pairs = list(zip(fresh, results, strict=True))
+
+    # Draft letters for the high scorers BEFORE the digest renders, so the
+    # digest can point at them. Not behind an opt-in flag: the whole point is
+    # that the letter is already waiting when the digest is opened. Cost is
+    # bounded by each board's draft_at plus COVER_MAX_PER_RUN. Skipped on
+    # --dry-run, which persists nothing, and on --no-llm, where nothing scored.
+    if pairs and api_key and not args.dry_run and not args.no_llm and not args.no_cover:
+        drafted = cover.auto_draft(pairs, profile, api_key, log=log)
+        if drafted:
+            log(f"[run] {drafted} cover letter draft(s) in {config.COVER_DIR}/")
 
     text = digest_mod.render(funnel, pairs, profile, model_used, started_at, no_llm=args.no_llm)
 

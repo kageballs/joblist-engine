@@ -14,6 +14,11 @@ FAST_MODEL = "claude-haiku-4-5-20251001"
 COVER_MODEL = SCORING_MODEL
 COVER_MAX_TOKENS = 1200
 
+# Hard ceiling on letters auto-drafted in one run, whatever the boards say.
+# Per-board draft_at decides WHICH jobs qualify; this decides how much a very
+# good day is allowed to cost. The rest stay available via `py cover.py <uid>`.
+COVER_MAX_PER_RUN = 5
+
 # Jobs per scoring request. Output size scales with this, so it is also the
 # truncation guard: max_tokens is derived from it, not guessed.
 SCORE_BATCH_SIZE = 12
