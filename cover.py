@@ -119,8 +119,14 @@ def build_system(profile) -> list[dict]:
     return [{"type": "text", "text": body, "cache_control": {"type": "ephemeral"}}]
 
 
-def render(row, letter: str, blockers: list[str]) -> str:
-    """The file a human opens. Draft banner first, warnings before the text."""
+def render(row, letter: str, blockers: list[str], manual_steps=()) -> str:
+    """The file a human opens. Draft banner first, warnings before the text.
+
+    `manual_steps` are things this posting demands that take work before the
+    application can go out at all. They never affected the score and must not
+    read as if they did, but they belong at the top: the letter is useless if
+    the video it asks for was never recorded.
+    """
     score = row["score"] if row["score"] is not None else "--"
     lines = [
         f"# Draft cover letter: {row['title']}",
@@ -138,6 +144,15 @@ def render(row, letter: str, blockers: list[str]) -> str:
             "> BLOCKED. This posting asks for something listed as `cannot_provide`:"
             f" {', '.join(blockers)}. Decide whether to apply at all before spending"
             " time editing this.",
+            "",
+        ]
+    if manual_steps:
+        lines += ["## Before applying", ""]
+        lines += [f"- [ ] {config.REQUIREMENT_KINDS.get(k, k)}" for k in manual_steps]
+        lines += [
+            "",
+            "_This posting cannot be applied to in one sitting. It did not cost"
+            " the job any points._",
             "",
         ]
     lines += ["---", "", letter.strip(), ""]
@@ -181,6 +196,16 @@ def slug(uid: str) -> str:
 
 def out_path(uid: str) -> pathlib.Path:
     return pathlib.Path(config.COVER_DIR) / f"{slug(uid)}.md"
+
+
+def live_manual_steps(requirements, profile) -> list[str]:
+    """What this posting demands that costs work but not points.
+
+    Re-derived from the stored requirement rows against the CURRENT profile,
+    never stored on the job. Editing needs_manual_step therefore re-flags the
+    whole history for free, exactly as editing cannot_provide does.
+    """
+    return [r["kind"] for r in requirements if r["kind"] in profile.needs_manual_step]
 
 
 def live_blockers(row, profile) -> list[str]:
@@ -322,10 +347,9 @@ def main(argv=None) -> int:
             if target.exists() and not args.force:
                 log(f"[skip] {target.name} already exists (use --force to redraft)")
                 continue
+            requirements = store.requirements_for(row["uid"])
             try:
-                letter = draft(
-                    client, config.COVER_MODEL, system, row, store.requirements_for(row["uid"])
-                )
+                letter = draft(client, config.COVER_MODEL, system, row, requirements)
             except anthropic.APIError as exc:
                 # One bad job must not discard the drafts already written, and
                 # a traceback tells the caller nothing about how far it got.
@@ -333,7 +357,8 @@ def main(argv=None) -> int:
                 log(f"[fail] {row['title'][:48]}: {type(exc).__name__}: {exc}")
                 continue
             blockers = live_blockers(row, profile)
-            target.write_text(render(row, letter, blockers), encoding="utf-8")
+            steps = live_manual_steps(requirements, profile)
+            target.write_text(render(row, letter, blockers, steps), encoding="utf-8")
             written += 1
             score = row["score"] if row["score"] is not None else "--"
             flag = "  BLOCKED: " + ", ".join(blockers) if blockers else ""

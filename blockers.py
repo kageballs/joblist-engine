@@ -70,6 +70,7 @@ def evaluate(result: dict, profile) -> dict:
     Adds:
       requirements  normalised rows, always a list
       blockers      the mandatory ones the candidate cannot supply
+      manual_steps  ones they CAN supply, but only after doing some work
       score_raw     what the model said, before any penalty
       score         score_raw minus the penalty, floored at 0
     """
@@ -85,6 +86,15 @@ def evaluate(result: dict, profile) -> dict:
     out["blockers"] = blockers
     out["soft_blockers"] = [
         r["kind"] for r in rows if not r["mandatory"] and r["kind"] in cannot
+    ]
+
+    # A third category, and deliberately NOT priced. A posting that wants a
+    # video intro or a test task is not worth fewer points: the work is
+    # perfectly winnable, it just cannot be applied to in one sitting. Pricing
+    # it would bury exactly the jobs that are worth the extra hour, so this
+    # only ever surfaces a checklist. Nothing below this line may read it.
+    out["manual_steps"] = [
+        r["kind"] for r in rows if r["kind"] in profile.needs_manual_step
     ]
 
     raw = result.get("score")

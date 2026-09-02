@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 import blockers
 import config
+import cover
 
 VERDICT_ORDER = {"strong": 0, "maybe": 1, "no": 2, "unscored": 3}
 
@@ -184,6 +185,13 @@ def _entry(verdict, result, profile) -> str:
         bits.append(
             f"⚠️ {verdict.flagged_employer} — outsourcing intermediary, poor long-term anchor."
         )
+    if result.get("manual_steps"):
+        # Above the salary and anchor lines on purpose: this is the thing that
+        # decides whether the job can be applied to today or needs an evening
+        # first. It never affected the score and must never read as if it did.
+        bits.append(
+            "BEFORE APPLYING: " + blockers.describe(result["manual_steps"]) + "."
+        )
     if verdict.local_anchor:
         bits.append(
             ", ".join(profile.local_anchor_regions) + "-eligible."
@@ -192,6 +200,9 @@ def _entry(verdict, result, profile) -> str:
     if annual:
         bits.append(f"Salary: up to {annual:,} USD/yr")
     bits.append("")
+    draft = cover.out_path(job.key)
+    if draft.exists():
+        bits.append(f"Draft letter: `{draft}`")
     bits.append("CV to send: **{}** · [apply]({})".format(
         result.get("cv_variant", "engineering"), job.url
     ))

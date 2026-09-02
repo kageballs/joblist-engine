@@ -241,3 +241,83 @@ def test_each_board_applies_its_own_display_threshold(tmp_path):
 
     assert "## himalayas" in text, "60 clears its board's 50"
     assert "## onlinejobs" not in text, "the same 60 does not clear its board's 90"
+
+
+# --- manual steps cost time, never points --------------------------------
+
+
+def _scored(score=70, requirements=()):
+    return {"i": 0, "score": score, "verdict": "maybe", "why": "reason",
+            "matched_skills": [], "concerns": [], "cv_variant": "engineering",
+            "requirements": list(requirements)}
+
+
+def test_a_manual_step_never_changes_the_score(profile):
+    """The whole point of the third category. Costs an evening, not points."""
+    import blockers
+
+    out = blockers.evaluate(
+        _scored(70, [{"kind": "video_intro", "mandatory": True, "detail": "record 2 min"}]),
+        profile,
+    )
+    assert out["manual_steps"] == ["video_intro"]
+    assert out["score"] == out["score_raw"] == 70, "a winnable job must not be buried"
+    assert out["blockers"] == []
+
+
+def test_a_manual_step_and_a_real_blocker_coexist(profile):
+    """Only the impossible one is priced."""
+    import blockers
+
+    out = blockers.evaluate(
+        _scored(70, [
+            {"kind": "video_intro", "mandatory": True, "detail": "record 2 min"},
+            {"kind": "work_samples", "mandatory": True, "detail": "send 5"},
+        ]),
+        profile,
+    )
+    assert out["manual_steps"] == ["video_intro"]
+    assert out["blockers"] == ["work_samples"]
+    assert out["score"] == 70 - profile.blocker_penalty, "only the blocker is priced"
+
+
+def test_a_non_mandatory_manual_step_is_still_worth_flagging(profile):
+    """Unlike a blocker, it is flagged whether or not it is a hard condition."""
+    import blockers
+
+    out = blockers.evaluate(
+        _scored(70, [{"kind": "test_task", "mandatory": False, "detail": "optional"}]),
+        profile,
+    )
+    assert out["manual_steps"] == ["test_task"]
+    assert out["score"] == 70
+
+
+def test_the_digest_puts_the_checklist_where_it_will_be_read(profile):
+    import digest
+
+    now = datetime(2026, 9, 2, tzinfo=UTC)
+    verdict, result = _pair(profile, "himalayas", 70)
+    result["manual_steps"] = ["video_intro"]
+    text = digest.render(filters.Funnel(), [(verdict, result)], profile, "m", now)
+    assert "BEFORE APPLYING" in text
+    assert "video" in text.lower()
+
+
+def test_the_draft_file_carries_the_checklist(profile):
+    """The draft has to stand alone: the letter is useless if the video is not made."""
+    import cover
+
+    row = {"title": "T", "company": "C", "url": "u", "source": "himalayas", "score": 70}
+    out = cover.render(row, "Letter body.", [], ["video_intro"])
+    assert "Before applying" in out
+    assert "- [ ]" in out, "a checklist, not prose"
+    assert "did not cost the job any points" in out
+
+
+def test_manual_steps_are_re_derived_from_the_live_profile(profile):
+    """Never stored, so editing the list re-flags history with no API calls."""
+    import cover
+
+    requirements = [{"kind": "video_intro"}, {"kind": "degree"}]
+    assert cover.live_manual_steps(requirements, profile) == ["video_intro"]
