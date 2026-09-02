@@ -211,6 +211,25 @@ salary at all, and the job-page fetch that worked on the US site answered
 **403 Security Check** there. Thinner inventory, less structured data, and a
 harder fetch.
 
+### The rate limiting is itself the answer
+
+The probe above stopped early, and how it stopped matters more than the rows
+it did not collect. After roughly twenty job-page requests spread over a few
+minutes -- with a one second delay between them, from a real browser, in a
+real signed-in session -- `ph.indeed.com` began answering `403 Security Check`
+and then served a Cloudflare "Additional Verification Required" interstitial
+to ordinary search URLs. The block outlived a reload.
+
+That is the shape of the whole problem. Reading this board at all requires one
+request per job, a scheduled run makes exactly the regular machine-like
+pattern Cloudflare exists to catch, and the address it gets caught at is the
+operator's home connection -- the same one used to browse Indeed by hand and
+to apply. The cost of being wrong here is not a failed run, it is losing
+ordinary access to a job board during a job hunt.
+
+Nothing in this repo has that property today. Himalayas is a JSON feed,
+OnlineJobs is ordinary HTML, and neither retaliates.
+
 ### Recommendation
 
 Do not build this yet. It is not a legal or robots question — that was settled
