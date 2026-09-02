@@ -49,88 +49,151 @@ job, not a record of how this machine arrived at it.
 
 ## The capture snippet
 
-Open an Indeed search in Chrome — set the query, location and age window in
-the UI, so the URL carries the search you actually want:
+Two stages, because the search page carries no advert text (see the
+measurements below). The snippet reads the search cards, then fetches each
+job page for its `ld+json` description, and emits one capture object matching
+`fixtures/indeed.json`.
+
+Open the search in Chrome so the URL carries the query you want:
 
 ```
-https://www.indeed.com/jobs?q=python+developer&l=Remote&fromage=7
+https://ph.indeed.com/jobs?q=automation&l=Remote&fromage=7
 ```
 
-Then evaluate this in the page. It returns JSON; write it to
+Then evaluate this in the page and save the result as
 `data/captures/indeed-<YYYY-MM-DD>.json`.
 
 ```js
-(() => {
+(async () => {
+  // Edit these two between runs to walk a large result set in chunks.
+  const START = 0, LIMIT = 5;
+  const DELAY_MS = 3000;
+  const DESC_CAP = 6000;
+
   const model = window.mosaic
     ?.providerData?.["mosaic-provider-jobcards"]
     ?.metaData?.mosaicProviderJobCardsModel;
-  if (!model) throw new Error("job card model absent - page shape changed, or a challenge page");
+  if (!model) throw new Error("no job card model - challenge page, or the shape moved");
 
-  // Match WHOLE WORDS, splitting camelCase first. A substring test is wrong in
-  // both directions and was verified to be: unanchored, /link|sig|adId/ eats
-  // `linkedin`, `design` and `threadId`; end-anchored, it misses
-  // `trackingUrls` and `mosaicProviderCtx`. Splitting on the case boundary
-  // gets all five right.
-  const TRACKING_WORDS = new Set([
-    "link", "links", "url", "urls", "href", "beacon", "beacons",
-    "tracking", "track", "mosaic", "ctk", "tk", "sig", "signature",
-    "adid", "clk", "click", "clickid", "impression", "impressionid",
-    "token", "tokens", "ctx", "uuid", "session",
-  ]);
-  const words = (k) => k
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[^A-Za-z0-9]+/).filter(Boolean).map((w) => w.toLowerCase());
-  const isTracking = (k) => words(k).some((w) => TRACKING_WORDS.has(w));
+  const cards = (model.results || []).slice(START, START + LIMIT);
+  const site = location.host;
 
-  // A tracking token is a long unbroken run of URL-safe characters with no
-  // spaces. An earlier version tested for "?" and "=" instead, which blanks
-  // any prose containing a question mark and an attribute — fatal once this
-  // is pointed at the job page, whose description IS HTML. The 24-char floor
-  // also keeps `jobkey`, which is shorter and which the URL is rebuilt from.
-  const TOKENISH = /^[A-Za-z0-9_-]{24,}$/;
+  // Only the fields the parser reads. An allowlist, not a scrub: the shape is
+  // known now, and copying the whole card would drag every tracking token and
+  // session id into a file that outlives the session that made it.
+  // Flatten to text and drop every URL here, not in the parser. An advert body
+  // carries apply links with tracking parameters on them, and a capture file
+  // outlives the session that made it -- so the link never reaches disk at all.
+  const clean = (h) => (h || "")
+    .replace(/<(br|\/p|\/li|\/h[1-6]|\/div)[^>]*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\bwww\.\S+/gi, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+    .replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*/g, "\n\n").trim();
 
-  const scrub = (v) => {
-    if (Array.isArray(v)) return v.map(scrub);
-    if (v && typeof v === "object") {
-      const out = {};
-      for (const [k, val] of Object.entries(v)) {
-        if (isTracking(k)) continue;
-        out[k] = scrub(val);
-      }
-      return out;
+  const project = (r) => ({
+    jobkey: r.jobkey || "",
+    title: r.displayTitle || r.title || "",
+    company: r.company || null,
+    location: r.formattedLocation || null,
+    country: r.country || null,
+    remote_type: r.remoteWorkModel?.type || null,
+    remote_flag: !!r.remoteLocation,
+    pub_date: r.pubDate || null,
+    relative: r.formattedRelativeTime || null,
+    expired: !!r.expired,
+    salary_text: r.salarySnippet?.text || null,
+    salary_source: r.salarySnippet?.source || null,
+    salary_min: r.extractedSalary?.min ?? null,
+    salary_max: r.extractedSalary?.max ?? null,
+    salary_period: r.extractedSalary?.type || null,
+    job_types: (r.jobTypes || []).map((t) => t.label || t).filter((x) => typeof x === "string"),
+    url: r.jobkey ? `https://${site}/viewjob?jk=${r.jobkey}` : null,
+    date_posted: null,
+    valid_through: null,
+    description: "",
+  });
+
+  // Parse the schema.org JobPosting, never the DOM. The rendered description
+  // has no stable handle left -- #jobDescriptionText and every other
+  // documented Indeed selector is gone, and what remains is a hashed
+  // CSS-in-JS class that changes on their next deploy.
+  const hydrate = async (row) => {
+    if (!row.jobkey) return row;
+    const res = await fetch(`/viewjob?jk=${row.jobkey}`, { credentials: "include" });
+    if (!res.ok) { row.description = ""; return row; }
+    const html = await res.text();
+    for (const block of (html.match(/<script type="application\/ld\+json">[\s\S]*?<\/script>/g) || [])) {
+      try {
+        const o = JSON.parse(block.replace(/<script[^>]*>/, "").replace(/<\/script>/, ""));
+        if (o["@type"] !== "JobPosting") continue;
+        row.description = clean(o.description).slice(0, DESC_CAP);
+        row.date_posted = o.datePosted || null;
+        row.valid_through = o.validThrough || null;
+        return row;
+      } catch (e) { /* a malformed block is not a reason to lose the row */ }
     }
-    if (typeof v === "string" && TOKENISH.test(v)) return "";
-    return v;
+    return row;
   };
 
-  const results = (model.results || []).map((j) => {
-    const clean = scrub(j);
-    // Rebuilt from the key alone, never copied from the page's own link field.
-    clean.url = j.jobkey ? `https://www.indeed.com/viewjob?jk=${j.jobkey}` : null;
-    return clean;
-  });
+  const results = [];
+  for (const card of cards) {
+    results.push(await hydrate(project(card)));
+    await new Promise((r) => setTimeout(r, DELAY_MS));
+  }
 
   const q = new URLSearchParams(location.search);
   return JSON.stringify({
     captured_at: new Date().toISOString(),
+    site,
     query: q.get("q") || "",
     location: q.get("l") || "",
     fromage: q.get("fromage") || "",
-    start: q.get("start") || "0",
+    start: String(START),
     count: results.length,
     results,
   }, null, 1);
 })()
 ```
 
-Wrapped in an IIFE deliberately: a bare top-level `const model` throws
-`Identifier 'model' has already been declared` the second time it is pasted
-into the same console, and paging through results means running it several
-times in one tab.
+Wrapped in an async IIFE deliberately. A bare top-level `const` throws
+`Identifier has already been declared` the second time it is pasted into the
+same console, and walking a result set in chunks means running it repeatedly
+in one tab.
 
-One search page holds about 16 cards. For more, page with `&start=10`,
-`&start=20` … and capture each. The parser should treat a capture as a list of
-jobs and not care which page they came from.
+### Run it yourself, in DevTools
+
+Open the console on the search page, paste the snippet, and save what it
+returns. `copy($_)` puts the last result on the clipboard, or wrap the call in
+`console.log()` and use the console's own save.
+
+This is a job for the operator rather than for an agent, and not only by
+preference. An assistant driving the browser has its result inspected on the
+way back, and a payload of bulk text scraped out of a third-party page is
+refused — correctly, since that is exactly the shape of an exfiltration. Rows
+come back one at a time or not at all, which is fine for checking the format
+and useless for a real capture. Running it in your own console has no such
+limit.
+
+### Pacing is not optional
+
+`DELAY_MS` is 3000 and `LIMIT` is 5 because this is the part that gets
+punished. Twenty job-page requests at one second apart earned a `403 Security
+Check` and then a Cloudflare interstitial that outlived a reload, on ordinary
+search URLs — and it lands on the operator's own address, the one used to
+browse Indeed by hand and to apply through. Losing that is a worse outcome
+than a thin capture.
+
+If a run returns descriptions that are all empty, stop. That is the block, not
+a parsing bug.
+
+### Several captures are fine
+
+`sources/indeed.py` reads every `indeed-*.json` in the directory, dedupes on
+`jobkey` keeping the newest, and ignores a capture older than
+`config.INDEED_MAX_CAPTURE_AGE_DAYS`. So chunks, repeated queries and overlapping
+searches all compose without any care about ordering.
 
 ## What the parser will have to handle
 
@@ -255,7 +318,10 @@ and no `applicantLocationRequirements` at all. The search card states pay on
 roughly 7% of listings. So on this board:
 
 - region rejects nothing, exactly as on OnlineJobs, because both are domestic
-- salary rejects nothing either, because it is simply absent
+- salary is idle on the ~93% that state no figure. It works normally on the
+  rest -- against the fixture's salaried rows it correctly rejects a PHP
+  150,000/month listing at $14.79/hr and a $8-12/hr contract, and passes a PHP
+  1.79-2.39M/year one at $19.67/hr -- there is simply almost never a figure
 
 For contrast, on the stored history `filters.py` rejected 512 OnlineJobs
 listings and **510 of those were the salary stage** -- 99.6% of all the free

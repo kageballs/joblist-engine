@@ -47,18 +47,22 @@ def _job(source="himalayas", **kw):
 
 
 def test_an_undeclared_board_raises_rather_than_inheriting(profile):
-    """The whole point. A new board must be declared, never defaulted."""
+    """The whole point. A new board must be declared, never defaulted.
+
+    weworkremotely stands in for "a source with no boards.<name> block yet" --
+    it must stay a board profile.example.yaml never declares.
+    """
     with pytest.raises(targeting.ProfileError) as exc:
-        profile.board("indeed")
+        profile.board("weworkremotely")
     message = str(exc.value)
-    assert "indeed" in message
-    assert "boards.indeed" in message, "must say exactly what to add"
+    assert "weworkremotely" in message
+    assert "boards.weworkremotely" in message, "must say exactly what to add"
     assert "himalayas" in message, "must list what IS configured"
 
 
 def test_require_boards_fails_before_a_run_starts(profile):
     with pytest.raises(targeting.ProfileError):
-        profile.require_boards(["himalayas", "indeed"])
+        profile.require_boards(["himalayas", "weworkremotely"])
 
 
 def test_require_boards_passes_when_all_are_declared(profile):

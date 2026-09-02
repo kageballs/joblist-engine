@@ -59,6 +59,18 @@ ONLINEJOBS_MAX_PAGES = 40
 # and loud than silently spending an hour.
 ONLINEJOBS_MAX_HYDRATE = 120
 
+# Indeed cannot be fetched by this process at all -- a plain `requests` GET is
+# answered by a Cloudflare challenge on the first hit (docs/indeed-capture.md)
+# -- so it is read from capture files a real browser session wrote to disk,
+# never from the network. See sources/indeed.py.
+INDEED_CAPTURE_DIR = "data/captures"
+INDEED_SITE = "ph.indeed.com"
+# A capture is a photograph of a search page, not a feed -- nothing refreshes
+# it on its own. Past this age it contributes nothing and is skipped with a
+# warning, because a silently ignored stale capture looks identical to a board
+# with no jobs at all.
+INDEED_MAX_CAPTURE_AGE_DAYS = 14
+
 # OnlineJobs.ph states pay as free text, so the source normalises it to USD
 # itself (sources/onlinejobs.py). These rates are approximate and were taken on
 # 2026-08-30; they drift. That only matters for listings sitting within a few

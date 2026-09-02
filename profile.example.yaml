@@ -109,6 +109,25 @@ boards:
     absolute_floor_hourly_usd: 15
     max_age_days: 7
 
+  indeed:
+    # ph.indeed.com is a domestic board too, so the same local-rate floor as
+    # onlinejobs, not the international one.
+    absolute_floor_hourly_usd: 15
+    # Neither region nor salary is authoritative here (sources/indeed.py), so
+    # the deterministic stages eliminate almost nothing and nearly every
+    # capture reaches the scorer. display_threshold 0 keeps the whole thin
+    # board visible in the digest instead of hiding it behind a bar tuned for
+    # boards where the funnel already did the culling.
+    display_threshold: 0
+    # Lower than the 75 default: measured 2026-09-03 the best-scoring listing
+    # on this board landed at 75 (docs/indeed-capture.md), so 75 would draft
+    # nothing on a board that only yields ~15 listings a week.
+    draft_at: 70
+    # A capture is a photograph taken by hand, not a daily crawl -- matches
+    # the `fromage=7` search window it was captured with, not a longer default
+    # tuned for a board that refreshes itself.
+    max_age_days: 7
+
 scoring:
   # Point this at your own CV as plain text or markdown.
   resume_path: examples/resume.example.md

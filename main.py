@@ -7,7 +7,7 @@ Usage:
     py main.py --no-llm         deterministic filters only; no API key needed
     py main.py --explain        print the funnel and every rejection reason
     py main.py --since 72h      override the watermark
-    py main.py --source onlinejobs   run one source only
+    py main.py --source onlinejobs   run one source only (himalayas | onlinejobs | indeed)
     py main.py --rescore        re-evaluate already-seen jobs in the window
     py main.py --json           also print results as JSON on stdout
     py main.py --fast           score with the cheaper model
@@ -33,6 +33,7 @@ import digest as digest_mod
 import filters
 import targeting
 from sources.himalayas import Himalayas
+from sources.indeed import Indeed
 from sources.onlinejobs import OnlineJobs
 from store import Store
 
@@ -101,7 +102,7 @@ def main() -> int:
                         help="skip auto-drafting cover letters for high scorers")
     parser.add_argument("--since", type=parse_since, default=None)
     parser.add_argument("--source", default=None,
-                        help="run only this source (himalayas | onlinejobs)")
+                        help="run only this source (himalayas | onlinejobs | indeed)")
     parser.add_argument("--rescore", action="store_true",
                         help="re-evaluate jobs already marked seen (costs tokens)")
     parser.add_argument("--profile", default=config.PROFILE_PATH)
@@ -135,7 +136,11 @@ def main() -> int:
     fresh: list[filters.Verdict] = []
 
     sources = [(Himalayas(), config.HIMALAYAS_MAX_PAGES, "HIMALAYAS_MAX_PAGES"),
-               (OnlineJobs(), config.ONLINEJOBS_MAX_PAGES, "ONLINEJOBS_MAX_PAGES")]
+               (OnlineJobs(), config.ONLINEJOBS_MAX_PAGES, "ONLINEJOBS_MAX_PAGES"),
+               # Indeed never paginates -- hit_page_cap stays False -- so this
+               # cap is never read, but the tuple shape is shared across
+               # sources rather than special-cased per one.
+               (Indeed(), 0, "INDEED_MAX_CAPTURE_AGE_DAYS")]
     by_name = {s[0].name: s[0] for s in sources}
     if args.source:
         sources = [s for s in sources if s[0].name == args.source]
