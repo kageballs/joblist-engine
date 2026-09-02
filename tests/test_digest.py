@@ -70,7 +70,7 @@ def test_below_threshold_jobs_are_still_shown_with_reasons(profile, digest_dir):
               "matched_skills": [], "concerns": [], "cv_variant": "engineering"}
 
     text = digest.render(filters.Funnel(), [(verdict, result)], profile, "m", NOW)
-    assert "No matches above" in text
+    assert "No matches cleared their board's threshold" in text
     assert "wrong stack" in text
 
 

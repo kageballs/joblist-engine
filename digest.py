@@ -23,6 +23,29 @@ def _score_key(pair):
     return (VERDICT_ORDER.get(verdict, 9), -(result.get("score") or 0))
 
 
+def _partition(ranked, profile, now):
+    """Split scored pairs into kept-by-board, stale, and below-threshold.
+
+    Both cuts are per board and both happen HERE, at render time, never at
+    fetch or write time. Nothing is deleted for being stale or low, so raising
+    or lowering either number and re-rendering costs nothing and rewrites no
+    history. Same discipline as report.py --reapply.
+    """
+    kept: dict[str, list] = {}
+    stale, below = [], []
+    for verdict, result in ranked:
+        board = profile.board(verdict.job.source)
+        if board.is_stale(verdict.job.posted, now):
+            stale.append((verdict, result))
+            continue
+        score = result.get("score")
+        if score is not None and score < board.display_threshold:
+            below.append((verdict, result))
+            continue
+        kept.setdefault(verdict.job.source, []).append((verdict, result))
+    return kept, stale, below
+
+
 def render(funnel, scored_pairs, profile, model, started_at, no_llm=False) -> str:
     """`scored_pairs` is a list of (Verdict, result dict)."""
     lines = []
@@ -37,39 +60,56 @@ def render(funnel, scored_pairs, profile, model, started_at, no_llm=False) -> st
         lines.append("")
 
     ranked = sorted(scored_pairs, key=_score_key)
-    shown = [
-        (v, r) for v, r in ranked
-        if r.get("score") is None or r["score"] >= profile.display_threshold
-    ]
+    kept, stale, below = _partition(ranked, profile, started_at)
 
-    if shown:
-        # Split by the inbound line, not by score. Both groups are worth
-        # applying to; they differ in whether the rate is worth pushing on.
-        ask = [(v, r) for v, r in shown if v.clears_inbound_floor]
-        now = [(v, r) for v, r in shown if not v.clears_inbound_floor]
+    if stale:
+        lines.append(
+            f"_{len(stale)} listing(s) hidden as stale by their board's own age window._"
+        )
+        lines.append("")
 
-        if now:
-            lines.append(f"## Apply now — under ${profile.inbound_floor_hourly_usd:.0f}/hr")
+    if kept:
+        # Sectioned by board, never pooled. A score is only comparable within
+        # the board that produced it: on the author's own history the same
+        # rubric and model average 20.3 on one board and 5.9 on another, so a
+        # single ranked list across boards ranks nothing.
+        for board_name in sorted(kept):
+            rows = kept[board_name]
+            board = profile.board(board_name)
+            lines.append(f"## {board_name} — {len(rows)} listing(s)")
+            if board.display_threshold:
+                lines.append("")
+                lines.append(f"_Showing score {board.display_threshold}+ for this board._")
             lines.append("")
-            for verdict, result in now:
-                lines.append(_entry(verdict, result, profile))
-        if ask:
-            lines.append(
-                f"## Worth the ask — ${profile.inbound_floor_hourly_usd:.0f}/hr+ or unstated"
-            )
-            lines.append("")
-            for verdict, result in ask:
-                lines.append(_entry(verdict, result, profile))
-    elif ranked:
-        lines.append(f"## No matches above {profile.display_threshold}")
+
+            # Within a board, split by the inbound line rather than by score.
+            # Both groups are worth applying to; they differ in whether the
+            # rate is worth pushing back on.
+            ask = [(v, r) for v, r in rows if v.clears_inbound_floor]
+            now = [(v, r) for v, r in rows if not v.clears_inbound_floor]
+            if now:
+                lines.append(f"### Apply now — under ${profile.inbound_floor_hourly_usd:.0f}/hr")
+                lines.append("")
+                for verdict, result in now:
+                    lines.append(_entry(verdict, result, profile))
+            if ask:
+                lines.append(
+                    f"### Worth the ask — ${profile.inbound_floor_hourly_usd:.0f}/hr+ or unstated"
+                )
+                lines.append("")
+                for verdict, result in ask:
+                    lines.append(_entry(verdict, result, profile))
+    elif below:
+        lines.append("## No matches cleared their board's threshold")
         lines.append("")
-        lines.append(f"{len(ranked)} job(s) were scored but none cleared the threshold:")
+        lines.append(f"{len(below)} job(s) were scored but none cleared it:")
         lines.append("")
-        for verdict, result in ranked[:5]:
+        for verdict, result in below[:5]:
             lines.append(
-                "- **{}** ({}) — {} — {}".format(
+                "- **{}** ({}) [{}] — {} — {}".format(
                     result.get("score", "?"),
                     verdict.job.company or "unknown",
+                    verdict.job.source,
                     verdict.job.title,
                     result.get("why", ""),
                 )

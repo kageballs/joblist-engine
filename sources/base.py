@@ -90,10 +90,50 @@ class Job:
 
 
 class Source(Protocol):
-    """A job feed. One method, so adding a source stays cheap."""
+    """A job feed. One method, so adding a source stays cheap.
+
+    The capability flags below are declarations ABOUT THE BOARD, not about the
+    person using it. They say what this feed publishes and can therefore be
+    trusted on; the operator's own thresholds and floors for the board live in
+    `profile.yaml` under `boards:` instead. Keeping the two apart is what makes
+    "boards are isolated" enforceable: a board cannot inherit another board's
+    tuning, and a person's preference cannot silently claim a field the feed
+    does not actually have.
+    """
 
     name: str
+
+    # An empty `location_restrictions` means genuinely worldwide. TRUE only if
+    # the feed publishes hiring regions as a real field you can reject on.
+    # False means an empty tuple proves nothing: the restriction may be sitting
+    # in the prose, so the listing must reach the scorer rather than be treated
+    # as the good case. See filters.stage_region.
+    regions_authoritative: bool = True
+
+    # Does the feed publish pay as a field at all? False for boards that state
+    # it only in prose, or not at all. When False the salary stage cannot do
+    # any work on this board and the elimination has to come from elsewhere.
+    salary_authoritative: bool = True
+
+    # Does the feed state when a listing expires? Most do not, which is why an
+    # age window (boards.<name>.max_age_days) exists separately.
+    publishes_expiry: bool = False
 
     def fetch(self, since: datetime) -> Iterator[Job]:
         """Yield jobs posted at or after `since`, newest first."""
         ...
+
+
+def capability(source, flag: str) -> bool:
+    """Read a capability flag off a source, defaulting the way the protocol does.
+
+    Sources predate these flags and may not declare them, so this never raises.
+    """
+    return bool(getattr(source, flag, _CAPABILITY_DEFAULTS[flag]))
+
+
+_CAPABILITY_DEFAULTS = {
+    "regions_authoritative": True,
+    "salary_authoritative": True,
+    "publishes_expiry": False,
+}

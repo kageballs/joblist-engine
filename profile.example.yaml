@@ -85,6 +85,30 @@ employers:
   # is judged per posting rather than by a blanket veto.
   flag: []
 
+# Per-board policy. Boards are isolated: a score, a rate floor and an age
+# window are only meaningful within the board they came from, because the
+# boards genuinely behave differently. On the author's own data, the same
+# rubric and the same model average 20.3 on one board and 5.9 on another.
+#
+# `defaults` fills in what a board omits. A board with NO block at all is a
+# hard error rather than a silent inherit, so a new source cannot quietly
+# adopt another board's tuning.
+boards:
+  defaults:
+    display_threshold: 60
+    draft_at: 75          # score at or above which a letter is auto-drafted
+    absolute_floor_hourly_usd: 30
+    max_age_days: 21      # null to never trim by age on a board
+
+  himalayas:
+    draft_at: 75
+
+  onlinejobs:
+    # A domestic board pays local rates, so it carries its own floor rather
+    # than being judged against the international one.
+    absolute_floor_hourly_usd: 15
+    max_age_days: 7
+
 scoring:
   # Point this at your own CV as plain text or markdown.
   resume_path: examples/resume.example.md
@@ -115,4 +139,12 @@ deliverables:
   cannot_provide:
     - work_samples            # client work is under NDA, nothing is showable
     - named_clients
+
+  # Things you CAN supply, but not without doing something first. These NEVER
+  # affect the score: a posting is not worth less because it wants a video, it
+  # just needs a step from you before you can apply. Both the digest entry and
+  # the drafted cover letter carry the checklist.
+  needs_manual_step:
+    - video_intro
+    - test_task
   blocker_penalty: 30

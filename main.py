@@ -119,6 +119,16 @@ def main() -> int:
             store.close()
             return 1
 
+    # Boards are isolated, so every active source must declare its own policy.
+    # Checked here, before a single request goes out, because discovering it
+    # after a full fetch wastes the crawl and the operator's time.
+    try:
+        profile.require_boards([s[0].name for s in sources])
+    except targeting.ProfileError as exc:
+        log(f"[error] {exc}")
+        store.close()
+        return 1
+
     # Per-source isolation, deliberately. onlinejobs is scraped markup with no
     # contract behind it, so a class rename upstream is a matter of when. One
     # source dying must not throw away the other's results — the run only fails
@@ -132,7 +142,7 @@ def main() -> int:
                 if not args.rescore and store.seen(job.key):
                     funnel.seen_skipped += 1
                     continue
-                verdict = filters.evaluate(job, profile, started_at)
+                verdict = filters.evaluate(job, profile, started_at, source)
                 funnel.add(verdict)
                 if verdict.passed:
                     fresh.append(verdict)

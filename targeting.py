@@ -20,6 +20,37 @@ class ProfileError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class BoardPolicy:
+    """What this operator asks of ONE board.
+
+    Every number here is per board on purpose. A score, a rate floor and an age
+    limit are only meaningful within the board they came from: region and
+    timezone eliminate ~97.7% of Himalayas for zero tokens and reject nothing
+    on OnlineJobs, where salary is the only filter doing work, and OnlineJobs
+    tops out below the rate floor that Himalayas clears comfortably. There is
+    no single value that is correct for both, so there is no global one.
+    """
+
+    name: str
+    display_threshold: int
+    draft_at: int
+    absolute_floor_hourly_usd: float
+    # None means "never trim by age on this board".
+    max_age_days: int | None = None
+
+    def is_stale(self, posted, now) -> bool:
+        """Age check, applied when rendering rather than when fetching.
+
+        Nothing is deleted for being stale, so raising or lowering the window
+        re-renders differently with no refetch and no rewritten history. Same
+        discipline as report.py --reapply.
+        """
+        if self.max_age_days is None or posted is None:
+            return False
+        return (now - posted).days > self.max_age_days
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     based_in: str
@@ -43,7 +74,38 @@ class Profile:
     # caller holding the profile.
     cannot_provide: frozenset[str]
     blocker_penalty: int
+    # Requirement keys this person CAN supply, but only by doing something
+    # first: recording a video, sitting a test task. Deliberately separate from
+    # cannot_provide, and deliberately never priced -- see blockers.evaluate.
+    needs_manual_step: frozenset[str] = frozenset()
+    boards: dict[str, BoardPolicy] = field(default_factory=dict, repr=False)
     resume: str = field(default="", repr=False)
+
+    def board(self, name: str) -> BoardPolicy:
+        """Policy for one board. Raises rather than inventing a default.
+
+        A board with no block in profile.yaml is a configuration gap, not a
+        board to be treated like its neighbour. Falling back to another board's
+        numbers is the exact mistake this whole structure exists to prevent, so
+        it fails loudly instead.
+        """
+        try:
+            return self.boards[name]
+        except KeyError:
+            known = ", ".join(sorted(self.boards)) or "none"
+            raise ProfileError(
+                f"no policy for board {name!r} in profile.yaml.\n"
+                f"Add a `boards.{name}:` block. Configured boards: {known}.\n"
+                "Boards are not interchangeable: a threshold, floor or age "
+                "window from one board is meaningless on another, so this is "
+                "not defaulted for you."
+            ) from None
+
+    def require_boards(self, names) -> None:
+        """Fail before a run starts if any active source has no policy."""
+        missing = [n for n in names if n not in self.boards]
+        if missing:
+            self.board(missing[0])  # raises with the actionable message
 
     def flagged_employer(self, company: str) -> str | None:
         """Known rate-anchoring employer: surfaced with a reason, not hidden.
@@ -138,6 +200,34 @@ def load(path: str | None = None) -> Profile:
             + ", ".join(sorted(config.REQUIREMENT_KINDS))
         )
 
+    manual = [
+        str(k).strip()
+        for k in (deliverables.get("needs_manual_step") or [])
+        if str(k).strip()
+    ]
+    unknown = sorted(set(manual) - set(config.REQUIREMENT_KINDS))
+    if unknown:
+        raise ProfileError(
+            "deliverables.needs_manual_step has "
+            f"{'keys' if len(unknown) > 1 else 'a key'} that is not a requirement kind: "
+            + ", ".join(unknown)
+            + "\nValid keys: "
+            + ", ".join(sorted(config.REQUIREMENT_KINDS))
+        )
+    overlap = sorted(set(manual) & set(cannot))
+    if overlap:
+        raise ProfileError(
+            "these keys are in both deliverables.cannot_provide and "
+            "deliverables.needs_manual_step: " + ", ".join(overlap) + "\n"
+            "They mean opposite things. cannot_provide is what you can never "
+            "supply, and it docks the score. needs_manual_step is what you can "
+            "supply after doing some work, and it never touches the score. "
+            "Pick one per key."
+        )
+
+    boards = _boards(raw, default_threshold=int(scoring.get("display_threshold", 60)),
+                     default_floor=floor)
+
     resume_path = scoring.get("resume_path", "data/resume.md")
     resume = ""
     if os.path.exists(resume_path):
@@ -166,5 +256,49 @@ def load(path: str | None = None) -> Profile:
         display_threshold=int(scoring.get("display_threshold", 60)),
         cannot_provide=frozenset(cannot),
         blocker_penalty=int(deliverables.get("blocker_penalty", 30)),
+        needs_manual_step=frozenset(manual),
+        boards=boards,
         resume=resume,
     )
+
+
+def _boards(raw: dict, default_threshold: int, default_floor: float) -> dict[str, BoardPolicy]:
+    """Parse the `boards:` map.
+
+    `boards.defaults` fills in keys a board omits, and the top-level `scoring`
+    and `rate` values fill in what `defaults` itself omits, so a profile
+    written before this existed still loads. What is deliberately NOT provided
+    is a fallback for a board with no block at all: see Profile.board.
+    """
+    section = raw.get("boards") or {}
+    if not isinstance(section, dict):
+        raise ProfileError("`boards:` must be a mapping of board name to its settings.")
+
+    base = section.get("defaults") or {}
+    if not isinstance(base, dict):
+        raise ProfileError("`boards.defaults:` must be a mapping.")
+
+    def _num(source, key, fallback):
+        value = source.get(key, base.get(key, fallback))
+        return None if value is None else value
+
+    out: dict[str, BoardPolicy] = {}
+    for name, cfg in section.items():
+        if name == "defaults":
+            continue
+        cfg = cfg or {}
+        if not isinstance(cfg, dict):
+            raise ProfileError(f"`boards.{name}:` must be a mapping, or empty to take defaults.")
+        threshold = int(_num(cfg, "display_threshold", default_threshold))
+        age = _num(cfg, "max_age_days", None)
+        out[name] = BoardPolicy(
+            name=name,
+            display_threshold=threshold,
+            # A board that never says when to draft still should not draft
+            # everything it displays, so this tracks the threshold rather than
+            # defaulting to zero.
+            draft_at=int(_num(cfg, "draft_at", threshold)),
+            absolute_floor_hourly_usd=float(_num(cfg, "absolute_floor_hourly_usd", default_floor)),
+            max_age_days=None if age is None else int(age),
+        )
+    return out

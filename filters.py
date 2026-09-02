@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from sources import base
 from sources.base import Job
 from targeting import Profile
 
@@ -63,6 +64,11 @@ class Verdict:
     local_anchor: bool = False
     flagged_employer: str | None = None
     eligibility_notes: list[str] = field(default_factory=list)
+    # True when this board's region field cannot be trusted AND the listing
+    # states no restriction. The funnel still passes it -- rejecting on absent
+    # data would break the same tri-state discipline that governs salary --
+    # but the scorer is told not to read the silence as "worldwide".
+    region_unverified: bool = False
     # Splits the digest, never rejects. True when the stated rate clears the
     # inbound line, and also when nothing is stated at all — an unstated rate
     # is a rate worth asking about.
@@ -84,6 +90,12 @@ def stage_region(job: Job, profile: Profile, now: datetime) -> str | None:
 
     An empty restriction list means genuinely worldwide -- that is the good
     case and it passes. A non-empty list must admit this person explicitly.
+
+    An empty list only means that on a board whose region field is
+    authoritative. Where it is not, the restriction is routinely buried in the
+    prose instead ("we can only hire employees residing in British Columbia or
+    Ontario" under a `region` of Anywhere in the World), so an empty tuple
+    proves nothing and the listing has to reach the scorer to be read properly.
     """
     if not job.location_restrictions:
         return None
@@ -122,7 +134,12 @@ def stage_salary(job: Job, profile: Profile, now: datetime) -> str | None:
     annual = job.annual_usd_max()
     if annual is None:
         return None
-    floor_annual = profile.absolute_floor_hourly_usd * HOURS_PER_YEAR
+    # The board's own floor, not a global one. A domestic board pays local
+    # rates, and judging it against the international number rejects the whole
+    # board; judging the international board against the local number lets
+    # everything through. Neither is a compromise worth making.
+    floor_hourly = profile.board(job.source).absolute_floor_hourly_usd
+    floor_annual = floor_hourly * HOURS_PER_YEAR
     if annual < floor_annual:
         return f"pays up to {annual:,.0f} USD/yr, floor is {floor_annual:,.0f}"
     return None
@@ -170,9 +187,19 @@ STAGES = [
 ]
 
 
-def evaluate(job: Job, profile: Profile, now: datetime | None = None) -> Verdict:
+def evaluate(job: Job, profile: Profile, now: datetime | None = None,
+             source=None) -> Verdict:
+    """`source` is the Source instance the job came from, when the caller has it.
+
+    Optional so that a test can evaluate a bare Job, in which case the board is
+    assumed to publish trustworthy fields -- the same default the Source
+    protocol declares.
+    """
     now = now or datetime.now(UTC)
     verdict = Verdict(job=job)
+
+    if source is not None and not job.location_restrictions:
+        verdict.region_unverified = not base.capability(source, "regions_authoritative")
 
     annual = job.annual_usd_max()
     if annual is not None:
