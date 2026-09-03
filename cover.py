@@ -250,10 +250,23 @@ def auto_draft(pairs, profile, api_key, log=print) -> int:
     # 5.9, so ranking them together hands every slot to the generous board and
     # starves the board where clearing draft_at was the harder thing to do.
     # Within a board the ranking is real, so there it is highest-first.
-    by_board: dict[str, list] = {}
+    # Collapse repostings first. A board can list the same advert under two
+    # ids -- Himalayas served `accounting-automation-engineer-3984977259` and
+    # `-3943339358`, same company, same 4215-character description, same score
+    # -- and uid dedupe cannot see it because the uids genuinely differ. Left
+    # alone it buys two API calls and two slots for one job, which on a cap of
+    # five is most of the run's budget.
+    best: dict[tuple, tuple] = {}
     for candidate in candidates:
         if out_path(candidate[1].job.key).exists():
             continue
+        job = candidate[1].job
+        signature = (job.source, job.title.strip().lower(), (job.company or "").strip().lower())
+        if signature not in best or candidate[0] > best[signature][0]:
+            best[signature] = candidate
+
+    by_board: dict[str, list] = {}
+    for candidate in best.values():
         by_board.setdefault(candidate[1].job.source, []).append(candidate)
     for rows in by_board.values():
         rows.sort(key=lambda c: -c[0])
@@ -294,6 +307,13 @@ def auto_draft(pairs, profile, api_key, log=print) -> int:
             letter = draft(client, config.COVER_MODEL, system, row, requirements)
         except Exception as exc:  # noqa: BLE001 - one failure must not lose the rest
             log(f"[cover] failed {verdict.job.title[:44]}: {type(exc).__name__}: {exc}")
+            continue
+        if not letter.strip():
+            # Writing the banner with no letter under it is worse than writing
+            # nothing at all. The file's existence is what marks a job already
+            # drafted, so an empty one would permanently skip this job on every
+            # future run -- the advert would never get a second attempt.
+            log(f"[cover] empty response for {verdict.job.title[:44]}, not written")
             continue
         target = out_path(row["uid"])
         steps = live_manual_steps(requirements, profile)
@@ -463,6 +483,12 @@ def main(argv=None) -> int:
                 # a traceback tells the caller nothing about how far it got.
                 failed += 1
                 log(f"[fail] {row['title'][:48]}: {type(exc).__name__}: {exc}")
+                continue
+            if not letter.strip():
+                # Same reason as auto_draft: the file existing is what marks a
+                # job done, so an empty one is a permanent skip, not a retry.
+                failed += 1
+                log(f"[fail] {row['title'][:48]}: empty response, nothing written")
                 continue
             blockers = live_blockers(row, profile)
             steps = live_manual_steps(requirements, profile)

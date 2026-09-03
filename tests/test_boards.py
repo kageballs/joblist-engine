@@ -334,6 +334,9 @@ class _FakeClient:
     def __init__(self, fail_on=None):
         self.calls = []
         self.fail_on = fail_on
+        # Overridable so a test can reproduce the model returning nothing,
+        # which happened on a real run and used to write an empty draft file.
+        self.reply = "Letter body."
         outer = self
 
         class _M:
@@ -341,7 +344,7 @@ class _FakeClient:
                 outer.calls.append(kw)
                 if outer.fail_on and len(outer.calls) == outer.fail_on:
                     raise RuntimeError("rate limited")
-                block = type("B", (), {"type": "text", "text": "Letter body."})()
+                block = type("B", (), {"type": "text", "text": outer.reply})()
                 return type("R", (), {"content": [block]})()
 
         self.messages = _M()
@@ -380,7 +383,12 @@ def test_the_global_cap_bounds_a_good_day(profile, tmp_path, monkeypatch):
     _wire_cover(monkeypatch, tmp_path, client)
     monkeypatch.setattr(cover.config, "COVER_MAX_PER_RUN", 2)
 
-    pairs = [_pair(profile, "himalayas", s) for s in (72, 95, 80, 71, 88)]
+    # Distinct titles on purpose: five rows of the same advert are repostings,
+    # and auto_draft collapses those before the cap is applied.
+    pairs = [_pair(profile, "himalayas", n) for n in (76, 95, 80, 77, 88)]
+    for i, pair in enumerate(pairs):
+        pair[0].job = pair[0].job.__class__(
+            **{**pair[0].job.__dict__, "source_id": f"job{i}", "title": f"Engineer {i}"})
     written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
 
     assert written == 2
@@ -530,3 +538,47 @@ def test_within_one_board_the_best_still_goes_first(profile, tmp_path, monkeypat
     cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
     names = " ".join(p.name for p in (tmp_path / "covers").glob("*.md"))
     assert "ol1" in names and "ol0" not in names
+
+
+def test_an_empty_response_is_not_written_as_a_draft(profile, tmp_path, monkeypatch):
+    """A banner with no letter under it is worse than no file at all.
+
+    The file existing is what marks a job already drafted, so writing an empty
+    one would skip that advert on every future run: it would never get a second
+    attempt, and the operator would find a file that looks drafted and is not.
+    Observed live on 2026-09-03, when the model returned nothing for one job.
+    """
+    import cover
+
+    client = _FakeClient()
+    client.reply = "   \n  "
+    _wire_cover(monkeypatch, tmp_path, client)
+
+    pairs = [_pair(profile, "himalayas", 90)]
+    written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+
+    assert written == 0
+    assert list((tmp_path / "covers").glob("*.md")) == [], "nothing may be left on disk"
+
+
+def test_the_same_advert_listed_twice_is_drafted_once(profile, tmp_path, monkeypatch):
+    """Himalayas reposts one job under two ids, so uid dedupe cannot catch it.
+
+    Seen live: accounting-automation-engineer-3984977259 and -3943339358, same
+    company, same description, same score, two drafts, two API calls. On a cap
+    of five that is most of the run's budget spent on one advert.
+    """
+    import cover
+
+    client = _FakeClient()
+    _wire_cover(monkeypatch, tmp_path, client)
+
+    pairs = [_pair(profile, "himalayas", 80), _pair(profile, "himalayas", 80)]
+    for i, pair in enumerate(pairs):
+        pair[0].job = pair[0].job.__class__(
+            **{**pair[0].job.__dict__, "source_id": f"accounting-engineer-{i}"})
+
+    written = cover.auto_draft(pairs, profile, "sk-test", log=lambda m: None)
+
+    assert written == 1, "one advert, one letter"
+    assert len(client.calls) == 1, "the duplicate must not cost a second API call"
