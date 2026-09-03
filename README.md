@@ -26,7 +26,9 @@ it reads the parts a field cannot capture: a listing with an empty
 LATAM-only, or a "worldwide" role that is really a staffing agency placement.
 
 That division is the entire design. Deterministic where the data is
-trustworthy, model where it demonstrably lies.
+trustworthy, model where it demonstrably lies. Which stages return the same
+answer twice, what is free to re-run, and where the boundary is drawn is set
+out in [`docs/determinism.md`](docs/determinism.md).
 
 ### The pipeline
 

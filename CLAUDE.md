@@ -106,7 +106,11 @@ a listing with empty `locationRestrictions` whose description is Spanish and
 LATAM-only, or a ZAR salary quoted in prose that no currency field captured.
 
 Do not move work from `filters.py` into `scorer.py`. That is the mistake v1
-made, and it is what made v1 both expensive and useless.
+made, and it is what made v1 both expensive and useless. The direction of
+travel is the other way: when a stage can be made deterministic, make it
+deterministic. `docs/determinism.md` sets out which stages are which, what a
+re-run costs in each half, and why the model/local boundary sits where it
+does — read it before moving anything across that line.
 
 ### `sources/onlinejobs.py` inverts that idea, and pays for itself differently
 
