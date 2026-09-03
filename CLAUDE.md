@@ -41,6 +41,7 @@ Progress goes to stderr, results to stdout, the digest to `data/digest/`.
 main.py
   -> sources/himalayas.py   cursor pagination, watermark cutoff
   -> sources/onlinejobs.py  offset pagination, scraped HTML, salary normaliser
+  -> sources/indeed.py      reads data/captures/*.json, never the network
   -> filters.py             6 deterministic stages, ~99% eliminated here
   -> source.hydrate()       full advert text, SURVIVORS ONLY
   -> scorer.py              ONE batched Claude call over the survivors
@@ -60,10 +61,18 @@ boards. Sorting them together would reintroduce the comparison the whole
 design prevents: with one board averaging 20.3 and the other 5.9, a global
 sort gives every slot to the generous board and starves the board where
 clearing `draft_at` was the harder thing to do. Within a board the ranking is
-real, so there it is highest-first. A draft already on
-disk is skipped, so re-running never re-bills a job, and one job's API
-failure is caught and logged rather than losing the drafts already written or
-failing the run. It is skipped outright under `--dry-run` (nothing is
+real, so there it is highest-first.
+
+Candidates are deduped on `(source, title, company)`, keeping the
+highest-scoring copy, before the cap is applied — a board can list one advert
+under two ids (same company, same description, same score) and that would
+otherwise buy two API calls and two of the cap's slots for one job. A draft
+already on disk is skipped, so re-running never re-bills a job, and one job's
+API failure is caught and logged rather than losing the drafts already
+written or failing the run. An empty model response is not written, on
+purpose: a draft's existence on disk is what marks a job already drafted, so
+writing an empty file would skip that advert on every future run instead of
+leaving it to try again. It is skipped outright under `--dry-run` (nothing is
 persisted to point a draft at), `--no-llm` (nothing was scored), and
 `--no-cover`.
 
@@ -129,6 +138,45 @@ The stated pay string is also prepended to the description, because
 model can contradict it.
 
 Measured 2026-08-30: **82 fetched -> 61 rejected on salary for zero tokens.**
+
+### `sources/indeed.py` reads a capture, never the network
+
+Do not give this source a `fetch()` that hits the network. `ph.indeed.com`
+sits behind Cloudflare and the check is on the TLS/JS fingerprint, not the
+headers, so a plain `requests` GET is challenged on the first hit regardless
+of user agent (measured 2026-09-03, `docs/indeed-capture.md`). A real Chrome
+session is driven by hand instead, and writes `data/captures/indeed-<date>.json`;
+`sources/indeed.py` only reads that off disk. `py main.py` therefore never
+refreshes Indeed — the other two sources are on a schedule, this one is a
+photograph someone takes on purpose, and `_load_captures()` (sources/indeed.py
+~line 198) drops anything older than `config.INDEED_MAX_CAPTURE_AGE_DAYS`
+rather than let a stale file pass as current.
+
+Its capability flags are measured, not assumed, and say so in their own
+comments: `regions_authoritative = False` (a ph.indeed job page carries no
+`applicantLocationRequirements` at all), `salary_authoritative = False` (pay
+is stated on ~7% of cards and every sampled one is Indeed's own `EXTRACTION`
+guess, never an employer figure), `publishes_expiry = True` (`valid_through`
+is real). All three are measured in `docs/indeed-capture.md`; do not change
+one without re-measuring.
+
+Region also works the other way round from `sources/onlinejobs.py`.
+OnlineJobs *asserts* `("Philippines",)` for every listing because the board
+is domestic by definition. ph.indeed.com is a localisation of a global site —
+the same job-card model served `country: "US"` rows on indeed.com during the
+probe — so `_regions()` derives the tuple from the card's own `country` code
+instead, and an unrecognised code is left as an **empty tuple on purpose**
+rather than guessed at. That is what makes `regions_authoritative = False`
+load-bearing: `filters.evaluate()` reads the flag and marks the empty tuple
+`Verdict.region_unverified` rather than confirmed-worldwide, so the scorer is
+told the silence is not evidence.
+
+Salary is converted to USD inside the source (`parse_salary()`), exactly as
+`sources/onlinejobs.py` does and for the same reason: `annual_usd_max()`
+returns `None` for any non-USD currency, so an unconverted PHP figure would
+silently read as `unknown`. Currency is inferred from the stated text
+(`_currency()`), never from the site — a dollar figure on the PH site is not
+divided by `config.FX_TO_USD["PHP"]`.
 
 ### `targeting.py` — capability vs. policy
 
@@ -317,6 +365,9 @@ Note where that sentence goes. The caveat belongs in the job block, never in
 `build_system()`: the system block is cached byte-for-byte, and a per-board
 caveat living in a shared prefix would invalidate the cache on every batch
 that mixed two sources.
+
+`sources/indeed.py` is the real case of this, not a hypothetical — see
+"`sources/indeed.py` reads a capture, never the network" above.
 
 Commit a fixture under `fixtures/` and a parse test. Parse functions must
 return `None` on unusable input, never raise: Himalayas deprecated `offset`

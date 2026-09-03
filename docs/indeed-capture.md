@@ -1,12 +1,14 @@
 # Capturing Indeed
 
-> **Status: measured, and not recommended. Nothing is built.**
-> `sources/indeed.py` does not exist, and neither does an `indeed:` block in
-> `profile.yaml`. Read "What the measurement found" below before writing
-> either — on a real sample, **15 of 15** US listings were hireable only from
-> the United States, which this profile's region stage would reject in full.
-> The capture mechanics below are correct and were tested; the open question
-> is whether the board is worth capturing at all.
+> **Status: built and in use, on `ph.indeed.com` only.**
+> `sources/indeed.py` reads the captures described here, `boards.indeed` is
+> declared in `profile.example.yaml`, and `tests/test_indeed.py` covers the
+> parser. What is NOT built is any way to take a capture automatically — that
+> stays a manual step, for the reasons in "Recommendation" at the end.
+>
+> Do not point this at `indeed.com`. On a real sample, 15 of 15 US listings
+> were hireable only from the United States, which the region stage rejects in
+> full.
 
 Indeed is the one board this tool cannot fetch by itself, and that is a
 property of Indeed rather than a gap in the code. A plain `requests` GET —
@@ -21,14 +23,14 @@ splits across two stages that never run in the same process:
 | Stage | Where it runs | Produces |
 |---|---|---|
 | Capture | A real Chrome session, driven by hand or by an agent | `data/captures/indeed-<date>.json` |
-| Parse | `sources/indeed.py` — **not built yet** — offline, no network | `Job` objects, like every other source |
+| Parse | `sources/indeed.py`, offline, no network | `Job` objects, like every other source |
 
 The split is not a workaround, it is the only shape that works: the browser is
 attached to an interactive session and `main.py` cannot drive it. It also buys
-the usual benefit — the parser will be testable against a fixture with no
+the usual benefit — the parser is tested against `fixtures/indeed.json` with no
 network at all, exactly like `sources/onlinejobs.py`.
 
-**So `py main.py` will not refresh Indeed even once the parser lands.**
+**So `py main.py` never refreshes Indeed.**
 Himalayas and OnlineJobs stay fully automatic; Indeed needs a capture first.
 
 ## Why the capture scrubs before it returns
@@ -195,20 +197,32 @@ a parsing bug.
 `config.INDEED_MAX_CAPTURE_AGE_DAYS`. So chunks, repeated queries and overlapping
 searches all compose without any care about ordering.
 
-## What the parser will have to handle
+## What the parser does with a capture
 
-Written down now so the two halves cannot drift apart:
+The invariants that keep the two halves from drifting apart:
 
-- **A capture is a photograph, not a feed.** `captured_at` must be read, and a
-  capture older than the board's own `max_age_days` has nothing left to say.
-  The posting dates inside it are still subject to that window regardless.
-- **The two pages deserve different capability flags.** The search model has
-  no hiring-region field at all and an *inferred* salary, so a source built on
-  it alone would set `regions_authoritative = False` and
-  `salary_authoritative = False`. The job page publishes
-  `applicantLocationRequirements`, `baseSalary` and `validThrough`, which
-  would earn `True`, `True` and `publishes_expiry = True`. Do not average the
-  two: declare the flags for whichever page the source actually reads.
+- **A capture is a photograph, not a feed.** `_load_captures()` reads
+  `captured_at` and skips any file older than
+  `config.INDEED_MAX_CAPTURE_AGE_DAYS` (14) with a warning, because a silently
+  ignored capture looks exactly like a board with no jobs. That is a separate
+  number from `boards.indeed.max_age_days`, which still applies to the posting
+  dates *inside* a capture at render time.
+- **The flags describe the PH pages, because those are the ones read.** All
+  three are `False`, `False`, `True`: a ph.indeed job page carries no
+  `applicantLocationRequirements` and no `baseSalary` — only `validThrough` is
+  real. The US job page does publish region and salary, which is what makes it
+  tempting to declare `True`; do not, unless the source is actually changed to
+  read `indeed.com`, which the region measurement says it should not be.
+- **Region comes from each card's own `country`, never asserted board-wide.**
+  `onlinejobs.py` can hard-code `("Philippines",)` because that is what the
+  board is; ph.indeed.com is a localisation of a global site. An unrecognised
+  country yields an EMPTY tuple on purpose — that is what gives
+  `regions_authoritative = False` something to do, since `filters.py` then
+  marks the verdict `region_unverified`.
+- **Salary is converted to USD inside the source.** `annual_usd_max()` returns
+  `None` for any non-USD currency, so an unconverted peso figure would read as
+  "unknown". Currency is inferred from the stated text, not the site: a dollar
+  figure on the PH site must not be divided by 58.5.
 - **An `indeed:` block in `profile.yaml` is mandatory before the source is
   registered**, with its own floor and thresholds. That is the isolation rule:
   the board cannot inherit another board's tuning.
@@ -337,22 +351,28 @@ thin. Roughly 15 results per query per week is a single scoring batch, and a
 funnel that filters nothing is only ruinous at Himalayas' 2400-per-run scale.
 At this volume the arithmetic is affordable.
 
-### Recommendation
+### Recommendation, and what was decided
 
-Viable on `ph.indeed.com`, not worth it on `indeed.com`, and blocked on
-something other than economics.
+Viable on `ph.indeed.com`, not worth it on `indeed.com`.
 
 The US site fails outright: 15 of 15 sampled listings hire only from the
-United States. Do not build against it.
+United States. Nothing is built against it and nothing should be.
 
 The PH site is a genuine source of relevant, almost entirely new listings with
-full advert text. The obstacle is not cost and not the region stage, it is
-that **the capture cannot be automated from inside this repo**. Reading the
-board needs a real browser session, `main.py` cannot drive one, and so Indeed
-can never be a source in the sense the other two are. It would be a manual
-step producing a file, on a board where nothing filters for free.
+full advert text — 15 of 16 sampled employers appeared nowhere in the existing
+store. The obstacle was never cost and never the region stage. It is that the
+capture cannot be automated from inside this repo: reading the board needs a
+real browser session, `main.py` cannot drive one, and so Indeed is not a
+source in the sense the other two are.
 
-If that trade is acceptable, build it as a capture-plus-parser and keep the
-per-run volume small and the pacing slow -- the verification wall in the
-previous section arrived after about twenty job-page requests in a couple of
-minutes, and it arrives on the operator's own address.
+That trade was accepted and the parser was built. What it means in practice:
+
+- `py main.py` will fetch Indeed's captures but never create one. A run does
+  not refresh this board; a person does.
+- Keep the per-run volume small and the pacing slow. The verification wall
+  described above arrived after about twenty job-page requests in a couple of
+  minutes, and it arrives on the operator's own address.
+- Almost nothing filters for free here, so most captured listings reach the
+  model. That is affordable only while the board stays thin at roughly 15
+  results per query per week. If a capture ever gets large, check the cost
+  before widening a query.

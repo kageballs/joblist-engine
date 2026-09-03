@@ -37,10 +37,12 @@ the last thing reached, and it only ever sees what survived.
 flowchart TD
     H["sources/himalayas.py<br/><i>cursor pagination, JSON feed</i>"]
     O["sources/onlinejobs.py<br/><i>offset pagination, scraped HTML</i>"]
+    I["sources/indeed.py<br/><i>reads data/captures/*.json — no network</i>"]
     W{{"store.since()<br/>watermark + seen ids"}}
 
     H --> W
     O --> W
+    I -.->|"never refreshed by a scheduled run"| W
     W -->|"2665 fetched"| F
 
     subgraph F["filters.py — 6 ordered stages, zero tokens"]
@@ -89,13 +91,13 @@ Three things in that picture are the whole design:
 
 ### Boards are isolated
 
-Himalayas and OnlineJobs.ph are different businesses with different hiring
-standards, so a score, a rate floor or an age limit from one tells you
-nothing about the other. Measured on this repo's own stored history under an
-identical rubric and the same model: Himalayas scored n=169, avg 20.3, max
-80; OnlineJobs scored n=86, avg 5.9, max 75 — a 3.4x gap in the average. A
-single ranked list across both would bury every OnlineJobs listing under
-Himalayas noise and call it fair.
+Himalayas, OnlineJobs.ph and Indeed are three different businesses with three
+different hiring standards, so a score, a rate floor or an age limit from one
+tells you nothing about the others. Measured on this repo's own stored
+history under an identical rubric and the same model: Himalayas scored n=169,
+avg 20.3, max 80; OnlineJobs scored n=86, avg 5.9, max 75 — a 3.4x gap in the
+average. A single ranked list across boards would bury every OnlineJobs
+listing under Himalayas noise and call it fair.
 
 So every threshold, floor and age window lives per board in `profile.yaml`
 under `boards:` (see `profile.example.yaml`), and the digest is sectioned by
@@ -107,6 +109,32 @@ The age window (`max_age_days`) is one of those per-board numbers, and it is
 only ever applied when the digest renders, never when a job is fetched or
 stored. Nothing is deleted for being stale, so tightening or loosening the
 window and re-running costs nothing and rewrites no history.
+
+### Indeed is captured, not fetched
+
+`py main.py` never refreshes Indeed. Not on a schedule, not ever — Himalayas
+and OnlineJobs.ph stay fully automatic, but Indeed sits behind Cloudflare, and
+the check is on the TLS/JS fingerprint rather than the request headers, so no
+amount of header tuning gets a plain `requests` GET past it. A real Chrome
+session does get through, so that is what produces the data: someone drives
+Chrome by hand, runs a scrubbing snippet in the page, and saves the result as
+`data/captures/indeed-<date>.json`. `sources/indeed.py` only ever reads that
+file off disk — it makes no HTTP requests at all.
+
+A capture is a photograph, not a feed. It goes stale the way any photograph
+does, and nothing in this repo takes a new one for you. Add the board to your
+own `profile.yaml` (see `boards.indeed` in `profile.example.yaml`) and, when
+you want fresh listings, take a capture yourself — the procedure, the capture
+snippet, and the measurements behind it are in
+[`docs/indeed-capture.md`](docs/indeed-capture.md).
+
+Pacing when you do it matters more than it sounds like it should: the search
+page states no pay and no description, so each job needs its own page fetch,
+and roughly twenty of those a second apart earned the capturing session a
+`403` and then a Cloudflare interstitial that outlived a reload — on the
+operator's own address, the one used to browse Indeed and to apply through.
+The documented settings are 5 jobs per run, 3 seconds apart; do not raise
+either number to make a capture go faster.
 
 ### An earlier version of this repo did the opposite
 
@@ -300,12 +328,14 @@ sources/
   base.py              Job model and the Source protocol
   himalayas.py         cursor pagination over the Himalayas JSON feed
   onlinejobs.py        offset pagination, scraped HTML, salary normaliser
+  indeed.py            reads data/captures/*.json only — no network, ever
 dashboard/             Cloudflare Worker + D1, password-gated read-only view
 examples/              sample digest and resume, for the bundled demo profile
 fixtures/              committed API captures, so tests run offline
-tests/                 132 offline, 3 live
+tests/                 213 offline, 3 live
 docs/
   how-this-was-built.md   the agent-delegation method behind the repo
+  indeed-capture.md       the manual capture procedure and its measurements
 ```
 
 How the repo itself is built, and the control structure around the coding
@@ -329,6 +359,12 @@ a source that lies must set the flag `False`. An empty restriction list from
 that source is then carried forward as unverified rather than as confirmed
 worldwide, and the scorer is told so when it reads that job — silence from a
 board that never asks the question is not evidence of anything.
+
+`sources/indeed.py` is a real, in-repo case of the same thing: a ph.indeed.com
+job page carries no hiring-region field at all, so `regions_authoritative` is
+`False` there too, and an unrecognised country code is left as an empty
+restriction tuple on purpose rather than guessed at (see `CLAUDE.md` for the
+full reasoning).
 
 ## Testing
 
