@@ -20,7 +20,7 @@ tokens, because those are just fields. A representative run:
 2400 fetched  -2310 region  -1 employer  -9 salary  -66 role  14 to score
 ```
 
-So the model is not a filter. It is a ranker for the ~0.6% that survive, and
+So the model is not a filter. It is a ranker for the ~7% that survive, and
 it reads the parts a field cannot capture: a listing with an empty
 `locationRestrictions` whose description turns out to be Spanish-language and
 LATAM-only, or a "worldwide" role that is really a staffing agency placement.
@@ -28,7 +28,9 @@ LATAM-only, or a "worldwide" role that is really a staffing agency placement.
 That division is the entire design. Deterministic where the data is
 trustworthy, model where it demonstrably lies. Which stages return the same
 answer twice, what is free to re-run, and where the boundary is drawn is set
-out in [`docs/determinism.md`](docs/determinism.md).
+out in [`docs/determinism.md`](docs/determinism.md). What stops a wrong thing
+from shipping, and which parts of that net are still missing, is in
+[`docs/quality.md`](docs/quality.md).
 
 ### The pipeline
 
@@ -45,37 +47,43 @@ flowchart TD
     H --> W
     O --> W
     I -.->|"never refreshed by a scheduled run"| W
-    W -->|"2665 fetched"| F
+    W -->|"2690 fetched"| F
 
     subgraph F["filters.py — 6 ordered stages, zero tokens"]
         direction LR
         S1["expired"] --> S2["region"] --> S3["timezone"] --> S4["employer"] --> S5["salary"] --> S6["role"]
     end
 
-    F -->|"-2278 region · -213 salary · -14 role"| R["rejects table<br/><i>every cut, with its reason</i>"]
-    F -->|"~0.6% survive"| HY
+    F -->|"-2285 region · -213 salary · -10 role"| R["rejects table<br/><i>every cut, with its reason</i><br/><b>never pushed anywhere</b>"]
+    F -->|"178 survive · 6.6%"| HY
 
-    HY["source.hydrate()<br/><i>full advert text — SURVIVORS ONLY</i>"]
-    HY --> SC
+    HY["source.hydrate()<br/><i>full advert text — SURVIVORS ONLY</i><br/>onlinejobs only; the other boards ship it already"]
+    HY -->|"89 needed their own page fetch"| SC
 
-    SC["scorer.py<br/><b>one batched Claude call</b><br/><i>cached system block, no transcript</i>"]
+    SC["scorer.py<br/><b>batched Claude calls, 12 jobs each</b><br/><i>cached system block, no transcript</i>"]
     SC -->|"score_raw + requirements"| BL
 
     BL["blockers.py<br/><i>local match against cannot_provide</i><br/><b>never sent to the API</b>"]
     BL -->|"score after penalty"| COV
 
-    COV["cover.auto_draft()<br/><i>per-board draft_at, score-descending, capped</i>"]
+    COV["cover.py<br/><i>in a run: round-robin per board, capped at 5</i><br/><i>--backfill: whole store, --limit bounds it</i><br/><b>thinking disabled, or the budget eats the letter</b>"]
+    COV --> CV[/"data/covers/*.md<br/><b>never leaves this machine</b>"/]
     COV --> D
 
     D["digest.py<br/><i>sectioned per board — markdown</i>"]
-    D --> ST["store.py<br/><i>SQLite</i>"]
-    ST --> PU["push.py"]
-    PU --> D1[("Cloudflare D1")]
-    D1 --> WK["Workers dashboard<br/><i>password-gated</i>"]
+    D --> ST[("store.py — SQLite<br/><i>jobs · rejects · job_requirements</i>")]
+    RH["rehydrate.py<br/><i>refills description on old rows</i><br/><b>free: HTTP only, never re-scores</b>"] -.->|"run by hand"| ST
+
+    ST --> PU["push.py<br/><i>allowlisted columns; description stays local</i>"]
+    CV -.->|"--with-covers<br/><b>localhost only — refused otherwise</b>"| PU
+    PU --> D1[("Cloudflare D1<br/><i>jobs · job_requirements · covers</i>")]
+    D1 --> WK["Workers dashboard<br/><i>password-gated · board tabs · /improve</i><br/>click a card → <b>/api/job</b> → score arithmetic,<br/>requirements, and the drafted letter"]
 
     style SC fill:#4a3f6b,stroke:#8b7fb8,color:#fff
     style F fill:#1f3a2e,stroke:#4a7a63,color:#fff
     style BL fill:#3a2f1f,stroke:#7a6a4a,color:#fff
+    style CV fill:#2f3a4a,stroke:#6a8aa6,color:#fff
+    style R fill:#3a2f3a,stroke:#7a5a7a,color:#fff
 ```
 
 Three things in that picture are the whole design:
@@ -85,7 +93,11 @@ Three things in that picture are the whole design:
   remainder. Moving work up into `scorer.py` is the v1 mistake.
 - **`hydrate()` runs after the funnel, never before.** Fetching each advert's
   own page at fetch time would spend a request on every listing the salary
-  floor discards for free, which is 20+ minutes at a 5s crawl delay.
+  floor discards for free, which is 20+ minutes at a 5s crawl delay. The cost
+  of getting this wrong is now visible in the data: every job scored before
+  the `description` column existed has no advert stored, and `rehydrate.py`
+  cannot recover most of them because the feed will not page back that far and
+  the job pages answer 403.
 - **`blockers.py` never touches the API.** The model reports what a posting
   *asks for*; matching that against what you cannot supply happens locally. So
   the list never leaves the machine, and editing it re-prices the entire stored
@@ -326,6 +338,8 @@ report.py              what employers keep asking for, tallied over history
 digest.py              markdown rendering
 store.py               SQLite: seen ids, watermark, runs, rejects, advert text
 push.py                ships scored rows to the D1 dashboard
+                       --with-covers also sends drafted letters, and is
+                       refused against any host but localhost
 sources/
   base.py              Job model and the Source protocol
   himalayas.py         cursor pagination over the Himalayas JSON feed

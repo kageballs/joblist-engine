@@ -1,0 +1,272 @@
+<title>The joblist pipeline</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#F6F7F8; --card:#FFFFFF; --ink:#12161B; --muted:#5C6672; --line:#DFE3E7;
+  --free:#1F7A5C; --model:#6D4FC2; --local:#A8701F;
+  --panel:#12161C; --panel-line:#252D38; --panel-ink:#E7EAEE; --panel-muted:#98A3B0;
+  --serif:"Spectral",Georgia,"Times New Roman",serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0E1116; --card:#151A21; --ink:#E7EAEE; --muted:#98A3B0; --line:#242C36;
+    --free:#4FBF95; --model:#A98CF0; --local:#D9A84E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E1116; --card:#151A21; --ink:#E7EAEE; --muted:#98A3B0; --line:#242C36;
+  --free:#4FBF95; --model:#A98CF0; --local:#D9A84E;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6}
+.wrap{max-width:60rem;margin:0 auto;padding:3rem 1.25rem 5rem}
+.col{max-width:38rem}
+h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,5vw,3rem);line-height:1.1;
+  margin:0 0 .6rem;text-wrap:balance;letter-spacing:-.01em}
+h2{font-family:var(--serif);font-weight:600;font-size:1.6rem;line-height:1.2;margin:3.5rem 0 .5rem;text-wrap:balance}
+h3{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+  font-weight:600;margin:2rem 0 .5rem}
+p{margin:0 0 1rem}
+a{color:var(--free)}
+.lede{font-size:1.12rem;color:var(--muted);max-width:36rem}
+.eyebrow{font-family:var(--mono);font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--free);margin:0 0 1rem}
+code{font-family:var(--mono);font-size:.88em;background:var(--card);border:1px solid var(--line);
+  border-radius:4px;padding:.05em .32em}
+strong{font-weight:600}
+hr{border:0;border-top:1px solid var(--line);margin:3rem 0}
+
+/* ---- the funnel, drawn to scale ---- */
+.funnel{margin:1.5rem 0 0;display:flex;flex-direction:column;gap:.5rem}
+.frow{display:grid;grid-template-columns:9.5rem 1fr;gap:.9rem;align-items:center}
+.flabel{font-family:var(--mono);font-size:.76rem;color:var(--muted);text-align:right}
+.ftrack{background:var(--card);border:1px solid var(--line);border-radius:3px;height:1.9rem;position:relative}
+.fbar{height:100%;border-radius:2px;background:var(--free);opacity:.85}
+.fbar.cut{background:var(--muted);opacity:.35}
+.fnum{position:absolute;top:50%;transform:translateY(-50%);left:.6rem;
+  font-family:var(--mono);font-size:.78rem;font-weight:500;color:var(--ink);
+  font-variant-numeric:tabular-nums;mix-blend-mode:normal}
+.fnum.out{left:auto;right:.6rem;color:var(--muted)}
+.fnote{font-size:.84rem;color:var(--muted);margin-top:.9rem;max-width:36rem}
+
+/* ---- fixed dark panel: diagrams read the same in both themes ---- */
+.panel{background:var(--panel);border:1px solid var(--panel-line);border-radius:10px;
+  padding:1.1rem;margin:1.5rem 0;overflow-x:auto}
+.panel .cap{font-family:var(--mono);font-size:.72rem;color:var(--panel-muted);
+  letter-spacing:.06em;text-transform:uppercase;margin:0 0 .8rem}
+pre.mermaid{margin:0;background:none;text-align:center;min-width:34rem}
+
+/* ---- key/value figures ---- */
+.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1.5rem 0}
+.fig{background:var(--card);padding:.9rem 1rem}
+.fig b{display:block;font-family:var(--mono);font-size:1.35rem;font-weight:500;
+  font-variant-numeric:tabular-nums;line-height:1.2}
+.fig span{display:block;font-size:.76rem;color:var(--muted);margin-top:.25rem}
+.fig.free b{color:var(--free)} .fig.model b{color:var(--model)} .fig.local b{color:var(--local)}
+
+/* ---- two-column split ---- */
+.split{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1.5rem;margin:1.5rem 0}
+.note{border-left:2px solid var(--line);padding-left:1rem}
+.note h4{margin:0 0 .35rem;font-size:.95rem;font-weight:600}
+.note.free{border-left-color:var(--free)}
+.note.model{border-left-color:var(--model)}
+.note.local{border-left-color:var(--local)}
+.note p{font-size:.9rem;color:var(--muted);margin:0}
+
+/* ---- table ---- */
+.scroll{overflow-x:auto;margin:1.25rem 0}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:32rem}
+th,td{text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+
+footer{margin-top:4rem;padding-top:1.5rem;border-top:1px solid var(--line);
+  font-size:.82rem;color:var(--muted)}
+</style>
+
+<div class="wrap">
+
+<p class="eyebrow">joblist · dataflow</p>
+<h1>The joblist pipeline</h1>
+<p class="lede">A job matcher that reads 2,690 listings and pays a language model to
+think about 178 of them. Everything else is decided by field comparisons that cost
+nothing and return the same answer every time.</p>
+
+<div class="figs">
+  <div class="fig"><b>2,690</b><span>listings fetched</span></div>
+  <div class="fig free"><b>93.4%</b><span>cut for zero tokens</span></div>
+  <div class="fig model"><b>178</b><span>reached the model</span></div>
+  <div class="fig local"><b>15</b><span>batched calls, 12 jobs each</span></div>
+</div>
+
+<h2>The funnel, drawn to scale</h2>
+<p>Every bar below is the real width of what survived that stage, from the run on
+2026&#8209;09&#8209;04. The point of the picture is how little is left by the time
+anything expensive happens.</p>
+
+<div class="funnel">
+  <div class="frow"><div class="flabel">fetched</div>
+    <div class="ftrack"><div class="fbar" style="width:100%"></div><span class="fnum">2,690</span></div></div>
+  <div class="frow"><div class="flabel">− already seen</div>
+    <div class="ftrack"><div class="fbar" style="width:99.85%"></div><span class="fnum">2,686</span><span class="fnum out">−4</span></div></div>
+  <div class="frow"><div class="flabel">− region</div>
+    <div class="ftrack"><div class="fbar" style="width:14.9%"></div><span class="fnum">401</span><span class="fnum out">−2,285</span></div></div>
+  <div class="frow"><div class="flabel">− salary floor</div>
+    <div class="ftrack"><div class="fbar" style="width:7.0%"></div><span class="fnum">188</span><span class="fnum out">−213</span></div></div>
+  <div class="frow"><div class="flabel">− role</div>
+    <div class="ftrack"><div class="fbar" style="width:6.6%"></div><span class="fnum">178</span><span class="fnum out">−10</span></div></div>
+  <div class="frow"><div class="flabel">scored</div>
+    <div class="ftrack"><div class="fbar" style="width:6.6%;background:var(--model)"></div><span class="fnum">178</span></div></div>
+</div>
+<p class="fnote">Region alone removes 85% of the intake. It is a string comparison
+against a stored field — no model, no network, no judgement. The salary stage is
+tri&#8209;state and never rejects on an unknown figure, which is why it cuts 213
+rather than the several hundred a two&#8209;state check would.</p>
+
+<h2>The whole path</h2>
+
+<div class="panel">
+  <p class="cap">source → filter → hydrate → score → penalise → draft → publish</p>
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'background':'#12161C','mainBkg':'#1A212A','primaryColor':'#1A212A','primaryTextColor':'#E7EAEE','primaryBorderColor':'#39424F','lineColor':'#6E7A8A','textColor':'#C6CDD6','edgeLabelBackground':'#12161C','clusterBkg':'#15251F','clusterBorder':'#2E5A48','fontFamily':'IBM Plex Sans, sans-serif','fontSize':'13px'}}}%%
+flowchart TD
+    H["sources/himalayas.py<br/><i>cursor pagination, JSON feed</i>"]
+    O["sources/onlinejobs.py<br/><i>offset pagination, scraped HTML</i>"]
+    I["sources/indeed.py<br/><i>reads a capture file — no network</i>"]
+    W{{"store.since()<br/>watermark + seen ids"}}
+
+    H --> W
+    O --> W
+    I -.->|"never refreshed by a scheduled run"| W
+    W -->|"2690 fetched"| F
+
+    subgraph F["filters.py — 6 ordered stages, zero tokens"]
+        direction LR
+        S1["expired"] --> S2["region"] --> S3["timezone"] --> S4["employer"] --> S5["salary"] --> S6["role"]
+    end
+
+    F -->|"-2285 region · -213 salary · -10 role"| R["rejects table<br/><i>every cut, with its reason</i><br/><b>never pushed anywhere</b>"]
+    F -->|"178 survive · 6.6%"| HY
+
+    HY["source.hydrate()<br/><i>full advert text — SURVIVORS ONLY</i>"]
+    HY -->|"89 needed their own page fetch"| SC
+
+    SC["scorer.py<br/><b>batched Claude calls, 12 jobs each</b><br/><i>cached system block, no transcript</i>"]
+    SC -->|"score_raw + requirements"| BL
+
+    BL["blockers.py<br/><i>local match against cannot_provide</i><br/><b>never sent to the API</b>"]
+    BL -->|"score after penalty"| COV
+
+    COV["cover.py<br/><i>round-robin per board, or --backfill</i><br/><b>thinking disabled</b>"]
+    COV --> CV[/"data/covers/*.md<br/><b>never leaves this machine</b>"/]
+    COV --> D
+
+    D["digest.py<br/><i>sectioned per board</i>"]
+    D --> ST[("SQLite<br/><i>jobs · rejects · requirements</i>")]
+    ST --> PU["push.py<br/><i>allowlisted columns</i>"]
+    CV -.->|"--with-covers<br/><b>localhost only</b>"| PU
+    PU --> D1[("Cloudflare D1")]
+    D1 --> WK["Workers dashboard<br/><i>password-gated, board tabs</i>"]
+
+    style SC fill:#3B2F5E,stroke:#8B7FB8,color:#fff
+    style F fill:#16342A,stroke:#3E7A63,color:#fff
+    style BL fill:#3A2F1F,stroke:#7A6A4A,color:#fff
+    style CV fill:#1E2A38,stroke:#5A7A9A,color:#fff
+</pre>
+</div>
+
+<h2>Three decisions that are the whole design</h2>
+
+<div class="split">
+  <div class="note free">
+    <h4>The model sits at the bottom</h4>
+    <p>Not the top. Field comparisons remove 93.4% before anything is billed, so the
+    expensive stage only ever reads the remainder. Version one did the opposite and
+    never completed a single run.</p>
+  </div>
+  <div class="note free">
+    <h4>Hydrate after the funnel</h4>
+    <p>Fetching each advert's own page at fetch time would spend a request on every
+    listing the salary floor discards for free. 89 pages were fetched instead of 2,690.</p>
+  </div>
+  <div class="note local">
+    <h4>Blockers never touch the API</h4>
+    <p>The model reports what a posting <em>asks for</em>. Matching that against what
+    you cannot supply happens locally — so the list never leaves the machine, and
+    editing it re-prices the entire stored history with zero API calls.</p>
+  </div>
+</div>
+
+<h2>Reproducible, and not</h2>
+<p>Every stage falls into one of two categories, and almost every other choice
+follows from keeping them apart.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th></th><th>Deterministic</th><th>Non-deterministic</th></tr></thead>
+  <tbody>
+    <tr><td>Stages</td>
+      <td><code>sources/*</code>, <code>filters.py</code>, <code>blockers.py</code>, <code>digest.py</code>, <code>report.py</code></td>
+      <td><code>scorer.py</code>, <code>cover.py</code></td></tr>
+    <tr><td>Cost</td><td class="n">zero</td><td class="n">one batched call per run, plus letters</td></tr>
+    <tr><td>Re-running</td><td>free, and safe</td><td>costs money, and the answer changes</td></tr>
+    <tr><td>Needs a key</td><td>no</td><td>yes</td></tr>
+  </tbody>
+</table>
+</div>
+<p>No temperature, <code>top_p</code> or seed is pinned anywhere, so the two model
+stages run at provider defaults. That is not theoretical: one board listed a single
+advert under two ids, and the identical input returned a reasoned decline once and
+an empty response the other time. Anything downstream of a model call treats a
+malformed or empty response as expected, not exceptional.</p>
+
+<h2>Boards are isolated</h2>
+<p>A score is only meaningful inside the board that produced it. Himalayas averages
+20.3 and OnlineJobs 5.9, so a single ranked list across both silently hands every
+cover-letter slot to the generous board — and starves the board where clearing the
+bar was the harder achievement. Slots are handed out round-robin, each board's best
+in turn. Every threshold, floor and age window is declared per board; a new board
+with no entry in the profile fails the run rather than inheriting someone else's tuning.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Board</th><th class="n">Stored</th><th class="n">Top score</th><th>How it is read</th></tr></thead>
+  <tbody>
+    <tr><td>himalayas</td><td class="n">357</td><td class="n">82</td><td>JSON feed, cursor pagination</td></tr>
+    <tr><td>onlinejobs</td><td class="n">239</td><td class="n">80</td><td>scraped HTML, offset pagination, per-job hydrate</td></tr>
+    <tr><td>indeed</td><td class="n">1</td><td class="n">35</td><td>a capture file saved by hand — never the network</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What never leaves the machine</h2>
+<p>Three things are deliberately withheld from the hosted dashboard, and each for a
+different reason.</p>
+<div class="split">
+  <div class="note">
+    <h4>Rejects</h4>
+    <p>Their reasons name flagged employers, so publishing them would make that list
+    inferable from a dashboard anyone could be shown.</p>
+  </div>
+  <div class="note">
+    <h4>Advert text</h4>
+    <p>Bulk employer copy, kept out of the pushed column allowlist.</p>
+  </div>
+  <div class="note">
+    <h4>Cover letters</h4>
+    <p>Written from the resume, in the candidate's own voice. The push refuses any
+    target host that is not localhost — enforced in code, with tests for the
+    substring traps a naive check waves through.</p>
+  </div>
+</div>
+
+<footer>
+Figures measured on the run of 2026-09-04. 265 offline tests, ruff clean.
+Companion page: <em>How joblist is built</em>.
+</footer>
+
+</div>

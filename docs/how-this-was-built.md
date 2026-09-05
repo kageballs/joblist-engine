@@ -30,7 +30,7 @@ flowchart TD
     ME ==> CR
 
     CR["<b>Adversarial review</b> — Opus<br/><i>fresh context, did not write the code</i>"]
-    CR ==> GATE{{"<b>The gate</b><br/>132 offline tests · ruff<br/>GitHub Actions CI"}}
+    CR ==> GATE{{"<b>The gate</b><br/>265 offline tests · ruff<br/>GitHub Actions CI"}}
     GATE ==>|"pass"| MERGE([merge])
 
     GATE -.->|"fail"| ORCH
@@ -41,6 +41,9 @@ flowchart TD
     style CR fill:#5a2f2f,stroke:#a06a6a,color:#fff
     style GATE fill:#3a2f1f,stroke:#7a6a4a,color:#fff
 ```
+
+Work large enough to have a boundary worth arguing about is written as a spec
+before an agent is given any of it: [`spec-driven.md`](spec-driven.md).
 
 ## The four rules that make it work
 
@@ -60,9 +63,11 @@ runs in a fresh context and did not write the code, so it cannot be persuaded
 by its own reasoning from an hour earlier.
 
 **The gate is mechanical, not conversational.** Nothing merges because an agent
-said it was finished. It merges because 132 offline tests and `ruff` pass in
+said it was finished. It merges because 265 offline tests and `ruff` pass in
 CI. Agents are fast and confidently wrong; the test suite is the thing that
-does not care how confident anyone was.
+does not care how confident anyone was. What that gate actually covers, and the
+layers it does not — the dashboard has no tests at all — is set out in
+[`quality.md`](quality.md).
 
 ## Where it went wrong, which is the useful part
 
@@ -77,8 +82,14 @@ generalises to the process above: an agent is worth reaching for when the task
 needs judgment on unstructured input, and is the wrong tool when the task is a
 `for` loop with an API bill attached.
 
-Two later bugs make the same point about the gate. A currency regex using `\b`
+Three later bugs make the same point about the gate. A currency regex using `\b`
 missed `25,000PHP` and read pesos as dollars, overstating one wage by about
 58x. And one board was being scored on a 280-character truncated teaser rather
-than the full advert. Neither was caught by reading the code. Both were caught
-by measuring the output and then written into `tests/` so they cannot return.
+than the full advert. And on 2026-09-04 three cover letters came back empty
+and were read as the model declining to write them. It was not declining:
+extended thinking was on by default and spent the entire 1200-token output
+budget inside a `thinking` block, leaving no text at all. One look at
+`response.stop_reason` settled in seconds what re-reading the prompt had not.
+
+None of the three was caught by reading the code. All three were caught by
+measuring the output and then written into `tests/` so they cannot return.

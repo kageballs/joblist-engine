@@ -1,0 +1,238 @@
+<title>How joblist is built</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#F6F7F8; --card:#FFFFFF; --ink:#12161B; --muted:#5C6672; --line:#DFE3E7;
+  --free:#1F7A5C; --model:#6D4FC2; --local:#A8701F; --fail:#A6383A;
+  --panel:#12161C; --panel-line:#252D38; --panel-ink:#E7EAEE; --panel-muted:#98A3B0;
+  --serif:"Spectral",Georgia,"Times New Roman",serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0E1116; --card:#151A21; --ink:#E7EAEE; --muted:#98A3B0; --line:#242C36;
+    --free:#4FBF95; --model:#A98CF0; --local:#D9A84E; --fail:#E08083;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E1116; --card:#151A21; --ink:#E7EAEE; --muted:#98A3B0; --line:#242C36;
+  --free:#4FBF95; --model:#A98CF0; --local:#D9A84E; --fail:#E08083;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6}
+.wrap{max-width:60rem;margin:0 auto;padding:3rem 1.25rem 5rem}
+h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,5vw,3rem);line-height:1.1;
+  margin:0 0 .6rem;text-wrap:balance;letter-spacing:-.01em}
+h2{font-family:var(--serif);font-weight:600;font-size:1.6rem;line-height:1.2;margin:3.5rem 0 .5rem;text-wrap:balance}
+p{margin:0 0 1rem;max-width:38rem}
+a{color:var(--free)}
+.lede{font-size:1.12rem;color:var(--muted);max-width:36rem}
+.eyebrow{font-family:var(--mono);font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--model);margin:0 0 1rem}
+code{font-family:var(--mono);font-size:.88em;background:var(--card);border:1px solid var(--line);
+  border-radius:4px;padding:.05em .32em}
+strong{font-weight:600}
+
+.panel{background:var(--panel);border:1px solid var(--panel-line);border-radius:10px;
+  padding:1.1rem;margin:1.5rem 0;overflow-x:auto}
+.panel .cap{font-family:var(--mono);font-size:.72rem;color:var(--panel-muted);
+  letter-spacing:.06em;text-transform:uppercase;margin:0 0 .8rem}
+pre.mermaid{margin:0;background:none;text-align:center;min-width:30rem}
+
+.scroll{overflow-x:auto;margin:1.5rem 0}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:34rem}
+th,td{text-align:left;padding:.65rem .8rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+td.who{font-weight:600;white-space:nowrap}
+td.m{font-family:var(--mono);font-size:.8rem;color:var(--muted);white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+
+/* The four rules are a set of equals, so they are a grid, not a numbered list. */
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1.5rem 0}
+.rule{background:var(--card);padding:1.1rem}
+.rule h3{margin:0 0 .4rem;font-size:.98rem;font-weight:600;line-height:1.3}
+.rule p{margin:0;font-size:.88rem;color:var(--muted);max-width:none}
+
+/* Failures ARE ordered — each one taught the next — so this one is numbered. */
+.fails{list-style:none;margin:1.5rem 0;padding:0;counter-reset:f}
+.fails li{counter-increment:f;position:relative;padding:0 0 1.4rem 3rem;
+  border-left:1px solid var(--line);margin-left:.9rem}
+.fails li:last-child{border-left-color:transparent;padding-bottom:0}
+.fails li::before{content:counter(f,decimal-leading-zero);position:absolute;left:-.9rem;top:0;
+  width:1.8rem;height:1.8rem;border-radius:50%;background:var(--paper);
+  border:1px solid var(--line);color:var(--fail);
+  font-family:var(--mono);font-size:.72rem;display:grid;place-items:center}
+.fails h3{margin:.15rem 0 .35rem;font-size:1rem;font-weight:600}
+.fails p{margin:0;font-size:.92rem;color:var(--muted)}
+.verdict{display:inline-block;font-family:var(--mono);font-size:.72rem;
+  border:1px solid var(--line);border-radius:99px;padding:.1rem .55rem;
+  color:var(--free);margin-top:.5rem}
+
+.gate{border:1px solid var(--line);border-left:3px solid var(--free);border-radius:6px;
+  background:var(--card);padding:1rem 1.15rem;margin:1.5rem 0;max-width:38rem}
+.gate p{margin:0;font-size:.92rem}
+.gate b{font-family:var(--mono);font-size:.9rem}
+
+footer{margin-top:4rem;padding-top:1.5rem;border-top:1px solid var(--line);
+  font-size:.82rem;color:var(--muted)}
+</style>
+
+<div class="wrap">
+
+<p class="eyebrow">joblist · process</p>
+<h1>How joblist is built</h1>
+<p class="lede">One engineer directing a tier of coding agents, and reviewing
+everything they produce. "Built with AI agents" means very little without the
+control structure around it, so this is the control structure.</p>
+
+<p>The same idea governs the tool and the process that writes it: <strong>let the cheap
+deterministic thing do as much as possible, and spend the expensive model only where
+judgement is genuinely required.</strong> In the tool that is the filter stack running
+before the scorer. In the process it is the routing below.</p>
+
+<h2>The control structure</h2>
+
+<div class="panel">
+  <p class="cap">intent → decomposition → execution → adversarial review → mechanical gate</p>
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'background':'#12161C','mainBkg':'#1A212A','primaryColor':'#1A212A','primaryTextColor':'#E7EAEE','primaryBorderColor':'#39424F','lineColor':'#6E7A8A','textColor':'#C6CDD6','edgeLabelBackground':'#12161C','fontFamily':'IBM Plex Sans, sans-serif','fontSize':'13px'}}}%%
+flowchart TD
+    U(["<b>Engineer</b><br/><i>intent · architecture · sign-off</i>"])
+    ORCH["<b>Orchestrator</b> — Opus<br/><i>decomposes, judges, resolves conflicts</i><br/>never edits in bulk itself"]
+
+    U ==>|"outcomes, not steps"| ORCH
+
+    ORCH ==> EX["<b>Explore</b> · Haiku<br/><i>where is X, usages</i><br/><b>returns</b> facts + file:line"]
+    ORCH ==> RS["<b>Researcher</b> · Sonnet<br/><i>official docs</i><br/><b>returns</b> citations"]
+    ORCH ==> IM["<b>Implementer</b> · Sonnet<br/><i>one defined change</i><br/><b>returns</b> diff + tests"]
+    ORCH ==> ME["<b>Mechanic</b> · Haiku<br/><i>one pattern everywhere</i><br/><b>returns</b> diff"]
+
+    EX ==> CR
+    RS ==> CR
+    IM ==> CR
+    ME ==> CR
+
+    CR["<b>Adversarial review</b> — Opus<br/><i>fresh context, did not write the code</i>"]
+    CR ==> GATE{{"<b>The gate</b><br/>265 offline tests · ruff<br/>GitHub Actions CI"}}
+    GATE ==>|"pass"| MERGE([merge])
+
+    GATE -.->|"fail"| ORCH
+    ORCH -.->|"design fork or spec gap:<br/>escalates, never decides"| U
+
+    style U fill:#16342A,stroke:#3E7A63,color:#fff
+    style ORCH fill:#3B2F5E,stroke:#8B7FB8,color:#fff
+    style CR fill:#4A2626,stroke:#A06A6A,color:#fff
+    style GATE fill:#3A2F1F,stroke:#7A6A4A,color:#fff
+</pre>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Tier</th><th class="m">Model</th><th>Given</th><th>Returns</th></tr></thead>
+  <tbody>
+    <tr><td class="who">Orchestrator</td><td class="m">Opus</td>
+      <td>An outcome, never a sequence of steps</td>
+      <td>Decomposition, judgement, and the resolution when two workers disagree</td></tr>
+    <tr><td class="who">Explore</td><td class="m">Haiku</td>
+      <td>"Where is X", "what calls this"</td>
+      <td>Facts with <code>file:line</code>, never file dumps</td></tr>
+    <tr><td class="who">Researcher</td><td class="m">Sonnet</td>
+      <td>A question the docs can answer</td>
+      <td>Findings with citations</td></tr>
+    <tr><td class="who">Implementer</td><td class="m">Sonnet</td>
+      <td>One well-scoped change with its boundaries</td>
+      <td>A diff and the tests that hold it</td></tr>
+    <tr><td class="who">Mechanic</td><td class="m">Haiku</td>
+      <td>A fully specified rename or pattern</td>
+      <td>A diff, no design judgement</td></tr>
+    <tr><td class="who">Reviewer</td><td class="m">Opus</td>
+      <td>The diff, in a fresh context</td>
+      <td>Findings only — it never edits</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>The four rules that make it work</h2>
+
+<div class="rules">
+  <div class="rule">
+    <h3>Workers return facts, never transcripts</h3>
+    <p>A search agent returns <code>filters.py:114, stage_salary is tri-state</code> and
+    nothing else. File dumps and narration defeat the purpose: the orchestrator's
+    context is the scarce resource being protected.</p>
+  </div>
+  <div class="rule">
+    <h3>Decisions come home</h3>
+    <p>A worker that hits a spec gap reports it rather than choosing. Every
+    architectural call here — tri-state salary, hydrating after the funnel, keeping
+    the personal list out of the prompt — was made at the top and handed down as a
+    constraint.</p>
+  </div>
+  <div class="rule">
+    <h3>Review is adversarial and has no memory</h3>
+    <p>The reviewing pass runs in a fresh context and did not write the code, so it
+    cannot be persuaded by its own reasoning from an hour earlier.</p>
+  </div>
+  <div class="rule">
+    <h3>The gate is mechanical, not conversational</h3>
+    <p>Nothing merges because an agent said it was finished. It merges because the
+    suite and <code>ruff</code> pass in CI. Agents are fast and confidently wrong.</p>
+  </div>
+</div>
+
+<div class="gate">
+  <p><b>265 offline tests · ruff · GitHub Actions</b><br>
+  The test count is not a vanity figure. Every number in it was added because
+  something was measured to be wrong, and each one is a claim that cannot quietly
+  stop being true.</p>
+</div>
+
+<h2>Where it went wrong, which is the useful part</h2>
+<p>The first version of this tool was itself an agentic loop: a model calling a fetch
+tool once, a scoring tool per job, then a compile tool. It grew a transcript it
+resent every turn, so cost scaled quadratically with the number of jobs, and it
+<strong>never completed a single run</strong>. That commit is still in the history.
+The rewrite deleted the loop and kept the model as a ranker.</p>
+<p>Three later bugs make the same point about the gate. None was caught by reading
+the code.</p>
+
+<ol class="fails">
+  <li>
+    <h3>A word boundary read pesos as dollars</h3>
+    <p>A currency regex using <code>\b</code> missed <code>25,000PHP</code> and parsed
+    it as dollars, overstating one wage by roughly <strong>58×</strong>. The code looked
+    correct. The output did not.</p>
+    <span class="verdict">found by measuring · now a test</span>
+  </li>
+  <li>
+    <h3>One board was scored on a teaser</h3>
+    <p>An entire source was being judged on a 280-character truncated snippet rather
+    than the full advert, because its listing feed only carries a preview. Hydration
+    now runs after the funnel, for survivors only.</p>
+    <span class="verdict">found by measuring · now a test</span>
+  </li>
+  <li>
+    <h3>"The model returned nothing" was a budget bug</h3>
+    <p>Three cover letters came back empty and were read as the model declining to
+    write them. It was not declining. Extended thinking was on by default and spent
+    the entire <strong>1,200-token</strong> output budget inside a thinking block,
+    leaving no text at all. One look at <code>stop_reason</code> settled in seconds
+    what re-reading the prompt had not; with thinking disabled the same advert
+    answered in <strong>74 tokens</strong>.</p>
+    <span class="verdict">found by measuring · now a named error</span>
+  </li>
+</ol>
+
+<p>The lesson generalises to the routing above. An agent is worth reaching for when
+the task needs judgement on unstructured input, and is the wrong tool when the task
+is a <code>for</code> loop with an API bill attached. The same sentence describes why
+the tool puts its filters before its model.</p>
+
+<footer>
+Test count and figures current as of 2026-09-04.
+Companion page: <em>The joblist pipeline</em>.
+</footer>
+
+</div>
