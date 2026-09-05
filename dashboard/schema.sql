@@ -58,3 +58,20 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   fails        INTEGER NOT NULL DEFAULT 0,
   window_start TEXT NOT NULL
 );
+
+-- Drafted cover letters. LOCAL DASHBOARD ONLY.
+--
+-- A letter is written from the resume and speaks in the candidate's own voice
+-- about their own history, which makes it the most personal thing the pipeline
+-- produces -- more so than the advert text that push.py already keeps off the
+-- wire. So ../push.py refuses --with-covers against any host that is not
+-- localhost, and on a deployed copy this table simply stays empty.
+--
+-- It lives in this shared file rather than a separate local-only schema so the
+-- two databases cannot drift apart. An empty table is not a leak; two schemas
+-- that disagree are a bug waiting for the day someone runs the wrong one.
+CREATE TABLE IF NOT EXISTS covers (
+  uid        TEXT PRIMARY KEY,
+  body       TEXT NOT NULL,
+  drafted_at TEXT
+);

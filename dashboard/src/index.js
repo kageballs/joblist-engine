@@ -64,7 +64,11 @@ async function handleList(request, env) {
   const [rows, tally] = await Promise.all([
     env.DB.prepare(
       "SELECT uid, source, title, company, url, posted_at, regions, salary_signal," +
-      ` score, verdict, why, cv_variant, state, score_raw, blockers FROM jobs WHERE ${filter}` +
+      " score, verdict, why, cv_variant, state, score_raw, blockers," +
+      // One EXISTS per row beats one fetch per card: the marker has to be
+      // on the card before it is clicked, or there is nothing to click for.
+      " EXISTS(SELECT 1 FROM covers c WHERE c.uid = jobs.uid) AS has_cover" +
+      ` FROM jobs WHERE ${filter}` +
       " ORDER BY score DESC NULLS LAST, posted_at DESC LIMIT 200",
     ).bind(...binds).all(),
     // The per-state tally has to respect the source filter too, or the tab
@@ -161,6 +165,54 @@ async function handleIngestRequirements(request, env) {
   return json({ ok: true, received: rows.length });
 }
 
+// Everything the dashboard knows about one job, including its drafted letter.
+//
+// Deliberately one request rather than three: the panel is useless half-filled,
+// and a job with no letter must render as "no letter yet" rather than as a
+// pending request that never resolves.
+async function handleDetail(request, env) {
+  const uid = new URL(request.url).searchParams.get("uid");
+  if (!uid) return json({ error: "bad request" }, 400);
+
+  const [job, reqs, cover] = await Promise.all([
+    env.DB.prepare(
+      "SELECT uid, source, title, company, url, posted_at, regions, salary_signal," +
+      " score, verdict, why, cv_variant, state, score_raw, blockers, first_seen" +
+      " FROM jobs WHERE uid = ?",
+    ).bind(uid).first(),
+    env.DB.prepare(
+      "SELECT kind, mandatory, detail, blocking FROM job_requirements WHERE uid = ?" +
+      " ORDER BY mandatory DESC, kind",
+    ).bind(uid).all(),
+    env.DB.prepare("SELECT body, drafted_at FROM covers WHERE uid = ?").bind(uid).first(),
+  ]);
+
+  if (!job) return json({ error: "unknown job" }, 404);
+  return json({ job, requirements: reqs.results, cover: cover || null });
+}
+
+// Cover letters arrive on their own endpoint, not folded into /ingest, so that
+// a push carrying no letters cannot silently wipe the ones already stored and
+// so the local-only rule has exactly one door to guard.
+async function handleIngestCovers(request, env) {
+  const auth = request.headers.get("Authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!(await checkSecret(env, token, env.INGEST_TOKEN))) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  const payload = await request.json().catch(() => null);
+  if (!Array.isArray(payload)) return json({ error: "expected a JSON array" }, 400);
+
+  const rows = payload.slice(0, 200).filter((r) => r && r.uid && typeof r.body === "string" && r.body);
+  const stmt = env.DB.prepare(
+    "INSERT INTO covers (uid, body, drafted_at) VALUES (?,?,?)" +
+    " ON CONFLICT(uid) DO UPDATE SET body = excluded.body, drafted_at = excluded.drafted_at",
+  );
+  const batch = rows.map((r) => stmt.bind(r.uid, r.body, r.drafted_at ?? null));
+  if (batch.length) await env.DB.batch(batch);
+  return json({ ok: true, received: batch.length });
+}
+
 // The Improve tab: one row per requirement kind, never per listing.
 //
 // It answers "what do I keep getting asked for that I cannot give them", so it
@@ -232,6 +284,9 @@ export default {
     if (pathname === "/ingest/requirements" && request.method === "POST") {
       return handleIngestRequirements(request, env);
     }
+    if (pathname === "/ingest/covers" && request.method === "POST") {
+      return handleIngestCovers(request, env);
+    }
     if (pathname === "/login" && request.method === "POST") {
       return handleLogin(request, env);
     }
@@ -248,6 +303,7 @@ export default {
     if (pathname === "/improve" && request.method === "GET") return handleImprove(request, env);
     if (pathname === "/" && request.method === "GET") return handleList(request, env);
     if (pathname === "/api/state" && request.method === "POST") return handleState(request, env);
+    if (pathname === "/api/job" && request.method === "GET") return handleDetail(request, env);
 
     return json({ error: "not found" }, 404);
   },

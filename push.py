@@ -5,6 +5,8 @@ name flagged employers, so publishing them would make that list inferable from
 the dashboard (see CLAUDE.md, "Privacy split").
 
     py push.py                # push everything scored
+    py push.py --with-covers --url http://127.0.0.1:8787
+                              # also send drafted letters (LOCAL dashboard only)
     py push.py --since 7d     # only jobs first seen in the last 7 days
     py push.py --dry-run      # print what would go, send nothing
 
@@ -20,11 +22,13 @@ import os
 import sqlite3
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import config
+import cover
 
 FIELDS = (
     "uid", "source", "title", "company", "url", "posted_at",
@@ -35,6 +39,36 @@ FIELDS = (
     "score_raw", "blockers",
 )
 CHUNK = 200
+
+# A cover letter is written from the resume and speaks in the candidate's own
+# voice about their own history. That makes it more personal than the advert
+# text `FIELDS` already keeps off the wire, so it travels only to a dashboard
+# running on this machine. Enforced here rather than left to discipline: the
+# whole point of a --url flag is that the target changes between invocations.
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def is_local(url: str) -> bool:
+    return (urllib.parse.urlsplit(url or "").hostname or "").lower() in LOCAL_HOSTS
+
+
+def collect_covers(uids: list[str]) -> list[dict]:
+    """Drafted letters for the jobs being pushed, read off disk.
+
+    Keyed through `cover.slug` rather than a second naming scheme, so a change
+    to how letters are named on disk cannot silently stop matching them here.
+    """
+    rows = []
+    for uid in uids:
+        path = cover.out_path(uid)
+        if not path.exists():
+            continue
+        body = path.read_text(encoding="utf-8")
+        if not body.strip():
+            continue
+        drafted = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+        rows.append({"uid": uid, "body": body, "drafted_at": drafted})
+    return rows
 
 
 def load_env(name: str) -> str | None:
@@ -121,8 +155,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", type=parse_since, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--with-covers", action="store_true",
+                        help="also send drafted cover letters "
+                             "(refused unless --url is localhost)")
     parser.add_argument("--url", default=load_env("DASHBOARD_URL"))
     args = parser.parse_args()
+
+    if args.with_covers and not is_local(args.url):
+        sys.exit(
+            f"refusing --with-covers against {args.url!r}: cover letters are "
+            "written from your resume and go only to a dashboard on this "
+            "machine. Run the local one (cd dashboard && npx wrangler dev "
+            "--local) and pass --url http://127.0.0.1:8787.")
 
     jobs = collect(args.since)
     if not jobs:
@@ -135,6 +179,9 @@ def main() -> int:
             print(f"  {job['score'] or '--':>3}  {job['company']}  {job['title'][:52]}")
         if len(jobs) > 10:
             print(f"  ... and {len(jobs) - 10} more")
+        if args.with_covers:
+            print(f"{len(collect_covers([j['uid'] for j in jobs]))} drafted letter(s) "
+                  f"would go with them")
         return 0
 
     token = load_env("INGEST_TOKEN")
@@ -155,10 +202,22 @@ def main() -> int:
             sent += result.get("received", 0)
         return sent
 
+    uids = [j["uid"] for j in jobs]
     sent = send(jobs, "/ingest", "jobs")
-    reqs = collect_requirements([j["uid"] for j in jobs])
+    reqs = collect_requirements(uids)
     sent_reqs = send(reqs, "/ingest/requirements", "requirements") if reqs else 0
-    print(f"pushed {sent} job(s) and {sent_reqs} requirement row(s) to {args.url}")
+    line = f"pushed {sent} job(s) and {sent_reqs} requirement row(s) to {args.url}"
+
+    if args.with_covers:
+        letters = collect_covers(uids)
+        # Letters are large next to a job row, so they go up in smaller batches
+        # than CHUNK would allow.
+        sent_covers = 0
+        for start in range(0, len(letters), 20):
+            sent_covers += send(letters[start:start + 20], "/ingest/covers", "covers")
+        line += f", plus {sent_covers} cover letter(s)"
+
+    print(line)
     return 0
 
 

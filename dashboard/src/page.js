@@ -51,8 +51,12 @@ p.scope{margin:0 0 .7rem;font-size:.76rem;color:var(--dim)}
 p.scope b{color:var(--fg);font-weight:600}
 main{padding:.75rem;max-width:44rem;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
-padding:.8rem;margin-bottom:.7rem}
+padding:.8rem;margin-bottom:.7rem;cursor:pointer}
+.card:hover{border-color:#39404f}
 .card.busy{opacity:.45}
+/* The triage row is the one part of a card that is NOT a way into the detail
+   panel, so it says so by cursor as well as by behaviour. */
+.acts{cursor:auto}
 .top{display:flex;gap:.6rem;align-items:flex-start}
 .score{flex:0 0 auto;width:2.6rem;height:2.6rem;border-radius:8px;display:grid;
 place-items:center;font-weight:700;font-size:1.05rem;background:#20242e}
@@ -65,6 +69,7 @@ place-items:center;font-weight:700;font-size:1.05rem;background:#20242e}
 .tag{font-size:.72rem;padding:.16rem .45rem;border-radius:4px;background:#20242e;color:var(--dim)}
 .tag.src{background:#1d2a3d;color:#8fb8ff}
 .tag.cv{background:#2a2333;color:#c9a7ff}
+.tag.cov{background:#1b2c24;color:#7fd8a6}
 .why{margin:.55rem 0 0;font-size:.86rem;color:var(--dim)}
 /* Muted, not alarming. These are real jobs you simply cannot apply to as
    written, not errors, and the card stays fully readable. */
@@ -103,6 +108,37 @@ background:var(--card);color:var(--fg);font:inherit}
 form.login button{width:100%;margin-top:.6rem;padding:.6rem}
 .err{color:#ff8080;font-size:.85rem;margin-top:.6rem}
 footer{color:var(--dim);font-size:.75rem;text-align:center;padding:1.5rem 1rem}
+/* Detail panel. A right-hand drawer rather than a centred modal: the list stays
+   visible behind it, so opening a card does not lose your place in a triage
+   pass of 200 rows. */
+#ov{position:fixed;inset:0;background:rgba(8,10,14,.7);z-index:20;display:flex;
+justify-content:flex-end}
+#pane{background:var(--card);border-left:1px solid var(--line);width:min(40rem,100%);
+height:100%;overflow-y:auto;padding:1rem 1.1rem 3rem;position:relative}
+#pane h2{margin:.2rem 0 .1rem;font-size:1.05rem;line-height:1.3}
+#pane .co{font-size:.9rem}
+#x{position:sticky;top:0;float:right;margin:-.2rem -.3rem 0 .6rem}
+.dsec{margin-top:1.1rem}
+.dsec h3{margin:0 0 .4rem;font-size:.74rem;text-transform:uppercase;
+letter-spacing:.05em;color:var(--dim);font-weight:600}
+.dsec p{margin:0;font-size:.88rem}
+.arith{font-size:.82rem;color:var(--dim)}
+.arith b{color:var(--fg)}
+.rq{list-style:none;margin:0;padding:0}
+.rq li{border-top:1px solid var(--line);padding:.45rem 0;font-size:.85rem}
+.rq li:first-child{border-top:0}
+.rq .k{font-weight:600}
+.rq .m{font-size:.7rem;color:var(--mid);margin-left:.4rem}
+.rq .b{font-size:.7rem;color:#e0a07a;margin-left:.4rem}
+.rq .d{color:var(--dim);margin-top:.15rem}
+/* The letter is a draft to be read and edited, not a rendered document. It is
+   shown as the exact text on disk -- markdown banner included -- because that
+   is what gets copied out. */
+.letter{white-space:pre-wrap;word-wrap:break-word;font:inherit;font-size:.86rem;
+background:#13161c;border:1px solid var(--line);border-radius:8px;
+padding:.75rem;margin:0;max-height:none}
+.nolet{color:var(--dim);font-size:.85rem;margin:0}
+.note{color:var(--dim);font-size:.76rem;margin:.45rem 0 0}
 `;
 
 function shell(title, body) {
@@ -180,6 +216,7 @@ ${blocked.length ? `<p class="blk">Requires what you cannot supply: <b>${esc(blo
   ${region ? `<span class="tag">${esc(region)}</span>` : ""}
   ${salary ? `<span class="tag">${esc(salary)}</span>` : ""}
   ${job.cv_variant ? `<span class="tag cv">CV: ${esc(job.cv_variant)}</span>` : ""}
+  ${job.has_cover ? `<span class="tag cov">letter drafted</span>` : ""}
   ${job.posted_at ? `<span class="tag">${esc(String(job.posted_at).slice(0, 10))}</span>` : ""}
 </div>
 ${job.why ? `<p class="why">${esc(job.why)}</p>` : ""}
@@ -191,24 +228,149 @@ ${job.why ? `<p class="why">${esc(job.why)}</p>` : ""}
 </div></article>`;
 }
 
+// Kind labels are shared with the server render rather than duplicated: a new
+// requirement kind must not be pretty on a card and raw in the panel.
 const SCRIPT = `
+var LBL = ${JSON.stringify(BLOCKER_LABEL)};
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+var ov = null;
+function onKey(e) { if (e.key === 'Escape') closeDetail(); }
+function closeDetail() {
+  if (!ov) return;
+  ov.remove();
+  ov = null;
+  document.removeEventListener('keydown', onKey);
+}
+function section(title, node) {
+  var s = el('div', 'dsec');
+  s.appendChild(el('h3', null, title));
+  s.appendChild(node);
+  return s;
+}
+
+// Everything below builds nodes and sets textContent. None of this content is
+// ever assigned as HTML: a letter is model output and a requirement detail is
+// employer copy, so both are treated as text no matter what they contain.
+async function openDetail(uid) {
+  closeDetail();
+  ov = el('div');
+  ov.id = 'ov';
+  ov.addEventListener('click', function (e) { if (e.target === ov) closeDetail(); });
+  var pane = el('div');
+  pane.id = 'pane';
+  pane.setAttribute('role', 'dialog');
+  pane.setAttribute('aria-modal', 'true');
+  pane.setAttribute('aria-label', 'Job detail');
+  var x = el('button', null, 'Close');
+  x.id = 'x';
+  x.addEventListener('click', closeDetail);
+  pane.appendChild(x);
+  var body = el('div');
+  body.appendChild(el('p', 'nolet', 'Loading...'));
+  pane.appendChild(body);
+  ov.appendChild(pane);
+  document.body.appendChild(ov);
+  document.addEventListener('keydown', onKey);
+  x.focus();
+
+  var data;
+  try {
+    var res = await fetch('/api/job?uid=' + encodeURIComponent(uid));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    data = await res.json();
+  } catch (err) {
+    body.textContent = '';
+    body.appendChild(el('p', 'nolet', 'Could not load this job: ' + err.message));
+    return;
+  }
+
+  body.textContent = '';
+  var j = data.job;
+  body.appendChild(el('h2', null, j.title));
+  body.appendChild(el('div', 'co', (j.company || 'unknown company') + ' · ' + j.source +
+    (j.posted_at ? ' · posted ' + String(j.posted_at).slice(0, 10) : '')));
+
+  if (j.score !== null && j.score !== undefined) {
+    var a = el('p', 'arith');
+    a.appendChild(el('b', null, 'Score ' + j.score));
+    if (j.score_raw !== null && j.score_raw !== undefined && j.score_raw !== j.score) {
+      a.appendChild(document.createTextNode(
+        ' · the model scored ' + j.score_raw + '; ' + (j.score_raw - j.score) +
+        ' was docked here, not by the model'));
+    }
+    body.appendChild(a);
+  }
+
+  if (j.why) body.appendChild(section('Why it scored that', el('p', null, j.why)));
+
+  var reqs = data.requirements || [];
+  if (reqs.length) {
+    var ul = el('ul', 'rq');
+    reqs.forEach(function (r) {
+      var li = el('li');
+      li.appendChild(el('span', 'k', LBL[r.kind] || r.kind));
+      if (r.mandatory) li.appendChild(el('span', 'm', 'required'));
+      if (r.blocking) li.appendChild(el('span', 'b', 'you cannot supply this'));
+      if (r.detail) li.appendChild(el('div', 'd', r.detail));
+      ul.appendChild(li);
+    });
+    body.appendChild(section('What this posting asks you to produce', ul));
+  }
+
+  var wrap = el('div');
+  if (data.cover && data.cover.body) {
+    wrap.appendChild(el('pre', 'letter', data.cover.body));
+    var copy = el('button', null, 'Copy letter');
+    copy.style.marginTop = '.6rem';
+    copy.addEventListener('click', function () {
+      navigator.clipboard.writeText(data.cover.body).then(
+        function () { copy.textContent = 'Copied'; },
+        function () { copy.textContent = 'Copy blocked — select the text instead'; });
+    });
+    wrap.appendChild(copy);
+    wrap.appendChild(el('p', 'note', 'This is a draft and has not been sent.' +
+      (data.cover.drafted_at ? ' Drafted ' + String(data.cover.drafted_at).slice(0, 10) + '.' : '') +
+      ' The file on disk is the original; editing here changes nothing.'));
+  } else {
+    wrap.appendChild(el('p', 'nolet', 'No letter drafted for this job.'));
+    wrap.appendChild(el('p', 'note', 'Letters are drafted during a run for jobs at or above ' +
+      'their own board draft_at, then sent here with: py push.py --with-covers ' +
+      '--url http://127.0.0.1:8787'));
+  }
+  body.appendChild(section('Cover letter', wrap));
+}
+
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-to]');
-  if (!btn) return;
-  const card = btn.closest('.card');
-  card.classList.add('busy');
-  try {
-    const res = await fetch('/api/state', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid: card.dataset.uid, state: btn.dataset.to }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    card.remove();
-    if (!document.querySelector('.card')) location.reload();
-  } catch (err) {
-    card.classList.remove('busy');
-    alert('Could not save: ' + err.message);
+  if (btn) {
+    const card = btn.closest('.card');
+    card.classList.add('busy');
+    try {
+      const res = await fetch('/api/state', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: card.dataset.uid, state: btn.dataset.to }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      card.remove();
+      if (!document.querySelector('.card')) location.reload();
+    } catch (err) {
+      card.classList.remove('busy');
+      alert('Could not save: ' + err.message);
+    }
+    return;
   }
+  // Anything already interactive keeps its own meaning. Only the inert parts of
+  // a card open the panel, so Apply still applies and Passed still passes.
+  if (e.target.closest('#ov') || e.target.closest('a') || e.target.closest('button')) return;
+  const open = e.target.closest('.card');
+  if (open && open.dataset.uid) openDetail(open.dataset.uid);
 });`;
 
 // Shared header chrome, so the Improve view sits inside the same board tabs as

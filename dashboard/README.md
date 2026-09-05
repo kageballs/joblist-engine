@@ -9,18 +9,29 @@ phone and the desktop agree.
 
 ## Privacy contract
 
-**Only the `jobs` table is ever pushed.** Rejects stay on the local machine:
-their reasons name flagged employers, so publishing them would make that list
-inferable from the dashboard. `schema.sql` has no rejects table and `push.py`
-never selects from one. Keep it that way.
+**Rejects are never pushed.** Their reasons name flagged employers, so
+publishing them would make that list inferable from the dashboard. `schema.sql`
+has no rejects table and `push.py` never selects from one. Keep it that way.
+
+**Cover letters never leave this machine.** They are written from the resume
+and speak in your own voice about your own history, which makes them the most
+personal thing the pipeline produces. `push.py --with-covers` refuses any
+`--url` whose host is not localhost, so the letters reach a dashboard you are
+running locally and nothing else. The `covers` table is in the shared
+`schema.sql` rather than a separate local-only file -- two schemas that can
+drift apart are worse than one table that stays empty in production -- and
+`tests/test_push.py` covers the hostname check, including the substring traps
+(`http://127.0.0.1.evil.example`, `http://localhost@evil.example`) that a
+naive check would wave through.
 
 ## Layout
 
 ```
 dashboard/
   wrangler.toml     config + non-secret vars
-  schema.sql        jobs + login_attempts
-  src/index.js      router: /, /login, /logout, /api/state, /ingest
+  schema.sql        jobs + job_requirements + covers + login_attempts
+  src/index.js      router: /, /improve, /login, /logout,
+                    /api/state, /api/job, /ingest{,/requirements,/covers}
   src/auth.js       password check, HMAC cookie, login throttling
   src/page.js       server-rendered HTML + CSS (no framework, no build step)
 ../push.py          reads local SQLite, POSTs to /ingest
@@ -91,12 +102,19 @@ py push.py        # mirror scored jobs to the dashboard
 the upsert deliberately omits `state`, so a job you already marked applied is
 never reset by a later run.
 
+Clicking a card opens a detail panel: the score arithmetic (what the model
+gave, what was docked locally), what the posting asks you to produce, and the
+drafted cover letter if there is one. Cards with a letter carry a `letter
+drafted` tag, so a triage pass can see which ones are ready to send without
+opening each. Letters only appear on a local dashboard -- see the privacy
+contract above.
+
 ## Local development
 
 ```bash
 cd dashboard
 npm run init-local        # schema into the miniflare D1
-npm run dev               # http://127.0.0.1:8788
+npm run dev               # http://127.0.0.1:8787
 ```
 
 Local secrets live in `.dev.vars` (gitignored). No Cloudflare account needed —
@@ -105,5 +123,13 @@ Local secrets live in `.dev.vars` (gitignored). No Cloudflare account needed —
 Push local data at it with:
 
 ```bash
-INGEST_TOKEN=<from .dev.vars> py push.py --url http://127.0.0.1:8788
+INGEST_TOKEN=<from .dev.vars> py push.py --url http://127.0.0.1:8787
+
+# with the drafted letters, which only a local dashboard may hold
+INGEST_TOKEN=<from .dev.vars> py push.py --with-covers --url http://127.0.0.1:8787
 ```
+
+`wrangler dev` must be started from a terminal that outlives the thing that
+launched it. Run it in its own window; a dev server started as a child of a
+short-lived process gets reaped with its parent and the port goes quiet with
+nothing in the log but a kill.
