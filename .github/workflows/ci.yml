@@ -14,6 +14,10 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt pytest ruff
       # `py` is a Windows launcher; runners have `python`.
+      #
+      # NOT continue-on-error. It was, and that made this job a liar: ruff
+      # could fail and the run stayed green, while the docs described the gate
+      # as "tests and ruff pass in CI". A gate that reports success on failure
+      # is worse than no gate, because it is trusted.
       - run: python -m ruff check .
-        continue-on-error: true
       - run: python -m pytest -q -m "not live"
