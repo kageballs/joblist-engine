@@ -97,6 +97,14 @@ boards:
   defaults:
     display_threshold: 60
     draft_at: 75          # score at or above which a letter is auto-drafted
+    # The lower bar that applies ONLY when the advert itself asks for a cover
+    # letter. Such a posting is incomplete without one however good the match,
+    # so it gets a letter at a lower score -- but not at any score: an advert
+    # scoring 20 that demands a letter is not an application anyone will send.
+    # Measured 2026-09-04 over the 342 stored adverts that have text: only 5
+    # ask for a letter, and every one of them scored 30 or below. So this bar
+    # currently fires on nothing. It is here for the day a good posting asks.
+    draft_if_asked_at: 60
     absolute_floor_hourly_usd: 30
     max_age_days: 21      # null to never trim by age on a board
 

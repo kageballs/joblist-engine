@@ -37,6 +37,20 @@ class BoardPolicy:
     absolute_floor_hourly_usd: float
     # None means "never trim by age on this board".
     max_age_days: int | None = None
+    # The lower bar that applies only when the advert itself asks for a cover
+    # letter. Two different questions: `draft_at` asks "is this good enough to
+    # be worth a letter", `draft_if_asked_at` asks "the employer has said the
+    # application is incomplete without one -- is this still worth applying to
+    # at all".
+    #
+    # None resolves to `draft_at` below, which is what makes this additive: a
+    # board that has not opted in behaves exactly as it did before, and every
+    # BoardPolicy built without the field keeps working.
+    draft_if_asked_at: int | None = None
+
+    def __post_init__(self):
+        if self.draft_if_asked_at is None:
+            object.__setattr__(self, "draft_if_asked_at", self.draft_at)
 
     def is_stale(self, posted, now) -> bool:
         """Age check, applied when rendering rather than when fetching.
@@ -291,13 +305,19 @@ def _boards(raw: dict, default_threshold: int, default_floor: float) -> dict[str
             raise ProfileError(f"`boards.{name}:` must be a mapping, or empty to take defaults.")
         threshold = int(_num(cfg, "display_threshold", default_threshold))
         age = _num(cfg, "max_age_days", None)
+        # A board that never says when to draft still should not draft
+        # everything it displays, so this tracks the threshold rather than
+        # defaulting to zero.
+        draft_at = int(_num(cfg, "draft_at", threshold))
         out[name] = BoardPolicy(
             name=name,
             display_threshold=threshold,
-            # A board that never says when to draft still should not draft
-            # everything it displays, so this tracks the threshold rather than
-            # defaulting to zero.
-            draft_at=int(_num(cfg, "draft_at", threshold)),
+            draft_at=draft_at,
+            # Defaults to draft_at rather than to something lower: a board that
+            # has not been told to relax its bar must not start drafting for
+            # adverts it would otherwise have skipped. Opting in is the
+            # operator's decision, per board, like everything else here.
+            draft_if_asked_at=int(_num(cfg, "draft_if_asked_at", draft_at)),
             absolute_floor_hourly_usd=float(_num(cfg, "absolute_floor_hourly_usd", default_floor)),
             max_age_days=None if age is None else int(age),
         )

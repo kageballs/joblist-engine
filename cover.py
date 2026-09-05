@@ -11,7 +11,15 @@ So the trigger is explicit:
     py cover.py <uid>            draft for one job (a unique prefix works)
     py cover.py <uid> <uid> ...  several
     py cover.py --top 5          the 5 highest-scoring stored jobs
+    py cover.py --backfill       every stored job that qualifies and has no
+                                 letter yet, across the whole store
     py cover.py <uid> --dry-run  print the prompt, call nothing
+
+A job qualifies when its score clears its own board's `draft_at`, OR when the
+advert asks for a cover letter and the score clears the board's lower
+`draft_if_asked_at`. Both bars are per board, because a score means nothing
+across boards. `--backfill --dry-run` lists what would be drafted, and why,
+without calling anything.
 
 Output is a markdown file per job under `data/covers/`, never sent anywhere.
 The letter is a draft for a human to edit: that is the whole point of the
@@ -62,6 +70,133 @@ RULES
 If the resume genuinely does not support an application to this advert, say so
 in one sentence instead of writing a letter, beginning with "NO STRONG MATCH:".
 """
+
+
+# Does the advert itself ask for a cover letter?
+#
+# Read off the stored text with a regex and no model call. The phrasing is
+# formulaic, the check costs nothing, and keeping it deterministic means the
+# rule can be changed and the whole stored history re-priced for free -- the
+# same discipline as `report.py --reapply` (see docs/determinism.md).
+_LETTER_ASK = re.compile(
+    r"(?:cover|covering|application|motivation|motivational)\s+letters?"
+    r"|letters?\s+of\s+(?:application|interest|motivation)",
+    re.IGNORECASE,
+)
+
+# "No cover letter needed" and "cover letters are not required" are common, and
+# both mean the opposite of a match. The negation can sit on either side of the
+# phrase, so both sides are examined -- but only within the same clause, since
+# a "not" belonging to another sentence says nothing about this one.
+_NEG_BEFORE = re.compile(
+    r"\b(?:no|not|without|dont|don't|do\s+not|does\s+not|skip|omit|avoid|never|"
+    r"rather\s+than|instead\s+of)\b[^.;:!?]{0,60}$",
+    re.IGNORECASE,
+)
+_NEG_AFTER = re.compile(
+    r"^[^.;:!?]{0,60}\b(?:not\s+(?:required|needed|necessary)|unnecessary|"
+    r"un-?needed|optional|is\s+not|are\s+not|isn't|aren't)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_cover_letter(text) -> bool:
+    """True when the advert asks the applicant to send a letter.
+
+    A posting that asks for one is a different case from a posting that scores
+    well: the application is incomplete without it, however good the match. So
+    this is a trigger in its own right, not a tiebreak.
+
+    Known limitation, tested rather than hidden: a double negative such as
+    "applications without a cover letter will not be read" is read as a
+    refusal and missed. The direction of that error is the point -- a miss
+    costs an auto-draft that `py cover.py <uid>` can still produce on request,
+    while a false positive spends a long call writing a document the employer
+    said not to send.
+    """
+    body = (text or "").strip()
+    if not body:
+        return False
+    for match in _LETTER_ASK.finditer(body):
+        before = body[max(0, match.start() - 80):match.start()]
+        after = body[match.end():match.end() + 80]
+        if _NEG_BEFORE.search(before) or _NEG_AFTER.search(after):
+            continue
+        return True
+    return False
+
+
+def draft_reason(score, board, description) -> str | None:
+    """Why this job should get a letter, or None. The single place that decides.
+
+    Two independent triggers, and the independence is the point:
+
+      * `score >= board.draft_at` -- the job is good enough to be worth the
+        call, judged against its own board and nobody else's.
+      * the advert asks for a letter, and the job clears the board's lower
+        `draft_if_asked_at` bar -- the employer has said the application is
+        incomplete without one, so a merely decent match still needs it.
+
+    The second bar exists so the ask cannot drag the floor to zero. An advert
+    scoring 20 that demands a cover letter is not an application anyone is
+    going to send, and drafting it would spend a long call to produce a file
+    nobody opens.
+    """
+    if score is None:
+        return None
+    if score >= board.draft_at:
+        return f"score {score} at or above {board.name} draft_at {board.draft_at}"
+    if score >= board.draft_if_asked_at and asks_for_cover_letter(description):
+        return (
+            f"the advert asks for a cover letter, and score {score} clears "
+            f"{board.name} draft_if_asked_at {board.draft_if_asked_at}"
+        )
+    return None
+
+
+def select_backfill(rows, profile) -> list[tuple]:
+    """Stored jobs that should have a letter and do not. Returns (row, reason).
+
+    `auto_draft` only ever sees the jobs of one run, so a job that qualified on
+    a day the cap was already spent never gets a second look. This walks the
+    whole store instead, which is what makes the backlog reachable at all.
+
+    Repostings are collapsed the same way `auto_draft` collapses them, and for
+    the same reason -- but with one extra step that matters here. A board can
+    list one advert under two uids, and the letter may sit on either of them,
+    so the check is "does any uid with this signature already have a file",
+    not "does this uid". Himalayas' Accounting Automation Engineer is exactly
+    this case: two uids, same 4215-character description, one drafted. Asking
+    per uid would draft the twin and pay twice for one job.
+    """
+    drafted: set[tuple] = set()
+    qualified: list[tuple] = []
+
+    for row in rows:
+        try:
+            board = profile.board(row["source"])
+        except Exception:  # noqa: BLE001 - an unconfigured board just does not draft
+            continue
+        signature = (
+            row["source"],
+            (row["title"] or "").strip().lower(),
+            (row["company"] or "").strip().lower(),
+        )
+        if out_path(row["uid"]).exists():
+            drafted.add(signature)
+            continue
+        reason = draft_reason(row["score"], board, row["description"])
+        if reason:
+            qualified.append((signature, row, reason))
+
+    picked: list[tuple] = []
+    seen: set[tuple] = set()
+    for signature, row, reason in qualified:
+        if signature in drafted or signature in seen:
+            continue
+        seen.add(signature)
+        picked.append((row, reason))
+    return picked
 
 
 def build_prompt(row, requirements=()) -> str:
@@ -161,13 +296,36 @@ def render(row, letter: str, blockers: list[str], manual_steps=()) -> str:
 
 
 def draft(client, model, system, row, requirements) -> str:
+    """One letter. Thinking is explicitly OFF, and that is load-bearing.
+
+    Measured 2026-09-04 on onlinejobs:1722982: with the model's default
+    thinking left on, the call came back `stop_reason: max_tokens` having
+    spent all 1200 output tokens inside a single `thinking` block, emitting no
+    text at all. The caller saw an empty string and correctly refused to write
+    a file -- so three adverts "returned nothing" that day, and not one of them
+    was a refusal. With thinking disabled the same advert answered in 74
+    tokens.
+
+    Drafting is a writing task, not a reasoning one. The budget belongs to the
+    letter.
+    """
     response = client.messages.create(
         model=model,
         max_tokens=config.COVER_MAX_TOKENS,
         system=system,
+        thinking={"type": "disabled"},
         messages=[{"role": "user", "content": build_prompt(row, requirements)}],
     )
-    return "".join(block.text for block in response.content if block.type == "text")
+    text = "".join(block.text for block in response.content if block.type == "text")
+    # An empty answer that stopped at the token ceiling is a budget bug, not a
+    # judgement. Say which one it is, or the next person spends an afternoon
+    # reading the prompt for a fault that is in the number above it.
+    if not text.strip() and response.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"no letter and stopped at max_tokens ({config.COVER_MAX_TOKENS}): "
+            f"the budget was consumed before any text was written"
+        )
+    return text
 
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -240,7 +398,7 @@ def auto_draft(pairs, profile, api_key, log=print) -> int:
             board = profile.board(verdict.job.source)
         except Exception:  # noqa: BLE001 - an unconfigured board just does not draft
             continue
-        if score >= board.draft_at:
+        if draft_reason(score, board, verdict.job.description):
             candidates.append((score, verdict, result))
 
     # The cap is shared out round-robin -- each board's best undrafted job, then
@@ -363,7 +521,7 @@ def load_api_key() -> str:
     return ""
 
 
-def _collect(store, args) -> list:
+def _collect(store, args, profile) -> list:
     """Resolve the requested jobs, or raise LookupError with an actionable message.
 
     Deduplicated on uid throughout: a repeated argument, or a named uid that
@@ -371,6 +529,26 @@ def _collect(store, args) -> list:
     """
     rows: list = []
     seen: set[str] = set()
+
+    if getattr(args, "backfill", False):
+        # No practical ceiling: the point of a backfill is that nothing
+        # qualifying is left behind. `--limit` is the bound, and it is applied
+        # after ranking so the cap always keeps the best jobs, not the first
+        # ones SQLite happened to return.
+        picked = select_backfill(store.recent(limit=1_000_000), profile)
+        if args.limit:
+            dropped = max(0, len(picked) - args.limit)
+            picked = picked[: args.limit]
+            if dropped:
+                log(f"[cover] {dropped} more qualify beyond --limit {args.limit}")
+        log(f"[cover] backfill: {len(picked)} job(s) qualify with no letter yet")
+        for row, reason in picked:
+            log(f"[cover]   {row['score'] if row['score'] is not None else '--':>3}"
+                f"  {row['title'][:46]}  ({reason})")
+            if row["uid"] not in seen:
+                seen.add(row["uid"])
+                rows.append(row)
+
     for uid in args.uids:
         row = store.get_job(uid)
         if row is None:
@@ -406,6 +584,17 @@ def main(argv=None) -> int:
         "--min-score", type=int, default=0, help="with --top, ignore jobs below this score"
     )
     parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="draft for every stored job that qualifies and has no letter yet",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help="with --backfill, draft at most N (highest scores first)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the prompt and exit; calls nothing, costs nothing",
@@ -415,8 +604,10 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.uids and not args.top:
-        parser.error("give at least one uid, or --top N")
+    if not args.uids and not args.top and not args.backfill:
+        parser.error("give at least one uid, or --top N, or --backfill")
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be 1 or more")
     if args.top is not None and args.top < 1:
         # SQLite reads a negative LIMIT as unbounded, so an unchecked --top -1
         # would draft, and bill for, every job in the store.
@@ -427,12 +618,17 @@ def main(argv=None) -> int:
     profile = targeting.load()
     with Store() as store:
         try:
-            rows = _collect(store, args)
+            rows = _collect(store, args, profile)
         except LookupError as exc:
             log(f"[error] {exc}")
             return 1
 
         if not rows:
+            if getattr(args, "backfill", False):
+                log("[cover] nothing to draft: every qualifying job already has a"
+                    " letter. Lower a board's `draft_at` or `draft_if_asked_at`"
+                    " in profile.yaml to widen it.")
+                return 0
             log("[error] nothing to draft: no stored job matched. Run `py main.py`"
                 " first, or lower --min-score.")
             return 1
