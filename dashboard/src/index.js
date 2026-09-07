@@ -43,6 +43,26 @@ async function handleLogin(request, env) {
   return redirect("/", { "Set-Cookie": await mintCookie(env) });
 }
 
+// The age cut, and it mirrors targeting.BoardPolicy.is_stale on purpose:
+//
+//   is_stale = max_age_days is not None
+//              and posted is not None
+//              and (now - posted).days > max_age_days
+//
+// timedelta.days truncates, so "not stale" is elapsed < max_age_days + 1. The
+// +1 is load-bearing: dropping it retires everything a day early and the digest
+// and the dashboard then disagree by one day, which is the exact bug this table
+// exists to prevent. A board with no policy row, or a row with no posted_at, is
+// never trimmed — silence is not evidence that something is stale.
+//
+// Applied to every query that lists OR counts. Filtering the list alone would
+// leave the tab badges advertising rows the list will not show, the same trap
+// the source filter already has a comment about below.
+const FRESH =
+  "(p.max_age_days IS NULL OR jobs.posted_at IS NULL" +
+  " OR julianday('now') - julianday(jobs.posted_at) < p.max_age_days + 1)";
+const WITH_POLICY = " FROM jobs LEFT JOIN board_policy p ON p.source = jobs.source";
+
 async function handleList(request, env) {
   const url = new URL(request.url);
   const tab = STATES.has(url.searchParams.get("tab")) ? url.searchParams.get("tab") : "new";
@@ -50,7 +70,8 @@ async function handleList(request, env) {
   // Which boards exist is data, not a constant: a new source appears here the
   // first time it ingests a row, with no deploy.
   const boards = await env.DB.prepare(
-    "SELECT source, COUNT(*) AS n FROM jobs GROUP BY source ORDER BY source",
+    "SELECT jobs.source AS source, COUNT(*) AS n" + WITH_POLICY +
+    ` WHERE ${FRESH} GROUP BY jobs.source ORDER BY jobs.source`,
   ).all();
   // `src` is user input. It is bound, never interpolated, and additionally
   // checked against the sources actually present so an unknown value shows
@@ -58,25 +79,28 @@ async function handleList(request, env) {
   const asked = url.searchParams.get("src");
   const source = boards.results.some((b) => b.source === asked) ? asked : null;
 
-  const filter = source ? "state = ? AND source = ?" : "state = ?";
+  // `source` is qualified now that a join is in play: board_policy carries a
+  // source column too, and an unqualified one would be ambiguous.
+  const filter = source ? "state = ? AND jobs.source = ?" : "state = ?";
   const binds = source ? [tab, source] : [tab];
 
   const [rows, tally] = await Promise.all([
     env.DB.prepare(
-      "SELECT uid, source, title, company, url, posted_at, regions, salary_signal," +
-      " score, verdict, why, cv_variant, state, score_raw, blockers," +
+      "SELECT uid, jobs.source AS source, title, company, url, posted_at, regions," +
+      " salary_signal, score, verdict, why, cv_variant, state, score_raw, blockers," +
       // One EXISTS per row beats one fetch per card: the marker has to be
       // on the card before it is clicked, or there is nothing to click for.
       " EXISTS(SELECT 1 FROM covers c WHERE c.uid = jobs.uid) AS has_cover" +
-      ` FROM jobs WHERE ${filter}` +
+      WITH_POLICY + ` WHERE ${filter} AND ${FRESH}` +
       " ORDER BY score DESC NULLS LAST, posted_at DESC LIMIT 200",
     ).bind(...binds).all(),
     // The per-state tally has to respect the source filter too, or the tab
     // badges advertise counts the filtered list will not show.
     source
-      ? env.DB.prepare("SELECT state, COUNT(*) AS n FROM jobs WHERE source = ? GROUP BY state")
-          .bind(source).all()
-      : env.DB.prepare("SELECT state, COUNT(*) AS n FROM jobs GROUP BY state").all(),
+      ? env.DB.prepare("SELECT state, COUNT(*) AS n" + WITH_POLICY +
+          ` WHERE jobs.source = ? AND ${FRESH} GROUP BY state`).bind(source).all()
+      : env.DB.prepare("SELECT state, COUNT(*) AS n" + WITH_POLICY +
+          ` WHERE ${FRESH} GROUP BY state`).all(),
   ]);
 
   const counts = { total: 0 };
@@ -213,6 +237,38 @@ async function handleIngestCovers(request, env) {
   return json({ ok: true, received: batch.length });
 }
 
+// Each board's age window. Safe to publish, unlike rejects: it is one integer
+// per board saying how long a listing stays on screen, not a record of who was
+// filtered out or why.
+//
+// `null` is a LEGAL value meaning "never trim this board", so it is accepted
+// rather than dropped as falsy. Treating null as missing would behave
+// identically today — no row and a null row both mean no trimming — and would
+// stop being identical the moment anything defaults an absent board to a real
+// window. Say the thing you mean.
+async function handleIngestPolicy(request, env) {
+  const auth = request.headers.get("Authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!(await checkSecret(env, token, env.INGEST_TOKEN))) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  const payload = await request.json().catch(() => null);
+  if (!Array.isArray(payload)) return json({ error: "expected a JSON array" }, 400);
+
+  const rows = payload.slice(0, 50).filter((r) =>
+    r && typeof r.source === "string" && r.source &&
+    (r.max_age_days === null || r.max_age_days === undefined ||
+     (Number.isInteger(r.max_age_days) && r.max_age_days >= 0)));
+
+  const stmt = env.DB.prepare(
+    "INSERT INTO board_policy (source, max_age_days) VALUES (?,?)" +
+    " ON CONFLICT(source) DO UPDATE SET max_age_days = excluded.max_age_days",
+  );
+  const batch = rows.map((r) => stmt.bind(r.source, r.max_age_days ?? null));
+  if (batch.length) await env.DB.batch(batch);
+  return json({ ok: true, received: batch.length });
+}
+
 // The Improve tab: one row per requirement kind, never per listing.
 //
 // It answers "what do I keep getting asked for that I cannot give them", so it
@@ -286,6 +342,9 @@ export default {
     }
     if (pathname === "/ingest/covers" && request.method === "POST") {
       return handleIngestCovers(request, env);
+    }
+    if (pathname === "/ingest/policy" && request.method === "POST") {
+      return handleIngestPolicy(request, env);
     }
     if (pathname === "/login" && request.method === "POST") {
       return handleLogin(request, env);

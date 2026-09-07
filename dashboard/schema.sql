@@ -75,3 +75,24 @@ CREATE TABLE IF NOT EXISTS covers (
   body       TEXT NOT NULL,
   drafted_at TEXT
 );
+
+-- Each board's age window, so this dashboard can retire a listing on the same
+-- day the digest does.
+--
+-- The window is a rendering concern in both places and is never applied at
+-- fetch or write time, so nothing is ever deleted for being stale and changing
+-- a number here re-renders the whole history for free. Same discipline as
+-- digest.py's _partition() and report.py --reapply.
+--
+-- It has to travel as data because the source of truth is boards.<name>.
+-- max_age_days in profile.yaml, which is local and never pushed. Without this
+-- table the Worker had no way to know a window existed at all, so the two
+-- surfaces disagreed the moment the first row aged out -- and the dashboard,
+-- being the one you actually look at, became the one showing dead listings.
+--
+-- A board with no row here is NOT trimmed. That is the safe default: a new
+-- source appears on the dashboard in full rather than silently empty.
+CREATE TABLE IF NOT EXISTS board_policy (
+  source       TEXT PRIMARY KEY,
+  max_age_days INTEGER
+);

@@ -29,9 +29,10 @@ naive check would wave through.
 ```
 dashboard/
   wrangler.toml     config + non-secret vars
-  schema.sql        jobs + job_requirements + covers + login_attempts
-  src/index.js      router: /, /improve, /login, /logout,
-                    /api/state, /api/job, /ingest{,/requirements,/covers}
+  schema.sql        jobs + job_requirements + covers + board_policy
+                    + login_attempts
+  src/index.js      router: /, /improve, /login, /logout, /api/state,
+                    /api/job, /ingest{,/requirements,/covers,/policy}
   src/auth.js       password check, HMAC cookie, login throttling
   src/page.js       server-rendered HTML + CSS (no framework, no build step)
 ../push.py          reads local SQLite, POSTs to /ingest
@@ -108,6 +109,30 @@ drafted cover letter if there is one. Cards with a letter carry a `letter
 drafted` tag, so a triage pass can see which ones are ready to send without
 opening each. Letters only appear on a local dashboard -- see the privacy
 contract above.
+
+## Listings age out here on the same day they age out of the digest
+
+`boards.<name>.max_age_days` in `profile.yaml` decides how long a listing stays
+on screen. That file is local and never pushed, so until the `board_policy`
+table existed this Worker had no way to know a window existed at all and applied
+none -- meaning the day rows started aging out, they vanished from the digest
+and stayed here, and the dashboard became the surface showing dead listings.
+
+`push.py` now sends one integer per board on every push (`/ingest/policy`), read
+through `targeting.load` rather than by parsing the YAML a second time, because
+two readers is how two surfaces start disagreeing. It is safe to publish: it
+says how long a board's listings stay visible, not who was filtered out.
+
+The cut is applied at **render**, exactly like `digest.py` -- nothing is deleted
+for being stale, so changing the number and re-pushing re-renders the whole
+history for free. It applies to every query that lists **or counts**, or the tab
+badges would advertise rows the list will not show.
+
+`tests/test_board_window.py` pins the SQL to `targeting.BoardPolicy.is_stale` by
+reading the predicate out of `src/index.js` and running it against SQLite beside
+the Python, so an edit to either side that moves the boundary fails the suite.
+Mutation-checked: dropping the `+ 1` fails 6 tests, dropping the `posted_at IS
+NULL` guard fails 1. A board with no policy row is never trimmed.
 
 ## Local development
 

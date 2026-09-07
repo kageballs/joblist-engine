@@ -107,3 +107,52 @@ def test_collect_covers_skips_missing_and_empty(tmp_path, monkeypatch):
 
     rows = push.collect_covers([written, blank, absent])
     assert [r["uid"] for r in rows] == [written]
+
+
+# --- board age windows -------------------------------------------------------
+#
+# The window is the one piece of profile.yaml that HAS to travel: the digest
+# applies it locally, and until it reached the Worker the dashboard applied
+# nothing at all and kept showing listings the digest had already retired.
+
+
+def test_collect_policy_reads_the_window_per_board():
+    """Straight from the profile the digest renders with — not a second parser."""
+    rows = push.collect_policy({"himalayas", "onlinejobs"}, "profile.example.yaml")
+    assert rows == [
+        {"source": "himalayas", "max_age_days": 21},
+        {"source": "onlinejobs", "max_age_days": 7},
+    ]
+
+
+def test_collect_policy_is_sorted_and_deduped():
+    """A stable payload, so an unchanged profile pushes an unchanged body."""
+    rows = push.collect_policy(["onlinejobs", "himalayas", "onlinejobs"],
+                               "profile.example.yaml")
+    assert [r["source"] for r in rows] == ["himalayas", "onlinejobs"]
+
+
+def test_an_unknown_board_is_skipped_not_fatal():
+    """Profile.board raises for a board with no block, deliberately.
+
+    That raise must not cost the push. An unknown board is a reason to leave
+    the dashboard untrimmed for it, never a reason to lose the job rows that
+    were about to go up alongside it.
+    """
+    rows = push.collect_policy({"himalayas", "nosuchboard"}, "profile.example.yaml")
+    assert [r["source"] for r in rows] == ["himalayas"]
+
+
+def test_a_null_window_travels_as_null(tmp_path):
+    """`max_age_days: null` means never trim, and must not arrive as "missing".
+
+    They behave identically today and would stop doing so the moment anything
+    defaults an absent board to a real window, so the distinction is kept.
+    """
+    profile = tmp_path / "p.yaml"
+    profile.write_text(
+        pathlib.Path("profile.example.yaml").read_text(encoding="utf-8")
+            .replace("max_age_days: 21", "max_age_days: null", 1),
+        encoding="utf-8")
+    rows = push.collect_policy({"himalayas"}, str(profile))
+    assert rows == [{"source": "himalayas", "max_age_days": None}]

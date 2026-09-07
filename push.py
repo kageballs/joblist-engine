@@ -29,6 +29,7 @@ from pathlib import Path
 
 import config
 import cover
+import targeting
 
 FIELDS = (
     "uid", "source", "title", "company", "url", "posted_at",
@@ -68,6 +69,31 @@ def collect_covers(uids: list[str]) -> list[dict]:
             continue
         drafted = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
         rows.append({"uid": uid, "body": body, "drafted_at": drafted})
+    return rows
+
+
+def collect_policy(sources, profile_path=None) -> list[dict]:
+    """Each board's age window, for the boards actually being pushed.
+
+    Read through `targeting.load` rather than by parsing profile.yaml here, so
+    the dashboard cannot end up applying a window the digest never had. One
+    reader, one meaning — a second parser is how two surfaces start disagreeing.
+
+    A board with no block raises in `Profile.board`, deliberately, and that
+    raise is caught here rather than allowed to kill a push: an unknown board is
+    a reason to leave the dashboard untrimmed for it, not a reason to lose the
+    job rows that were about to go up.
+
+    `max_age_days` of None is passed through as null, meaning "never trim", and
+    is not the same as omitting the board.
+    """
+    profile = targeting.load(profile_path or config.PROFILE_PATH)
+    rows = []
+    for name in sorted(set(sources)):
+        try:
+            rows.append({"source": name, "max_age_days": profile.board(name).max_age_days})
+        except targeting.ProfileError:
+            continue
     return rows
 
 
@@ -182,6 +208,10 @@ def main() -> int:
         if args.with_covers:
             print(f"{len(collect_covers([j['uid'] for j in jobs]))} drafted letter(s) "
                   f"would go with them")
+        for row in collect_policy({j["source"] for j in jobs}):
+            window = row["max_age_days"]
+            print(f"  window: {row['source']} -> "
+                  + ("never trimmed" if window is None else f"{window} days"))
         return 0
 
     token = load_env("INGEST_TOKEN")
@@ -206,7 +236,13 @@ def main() -> int:
     sent = send(jobs, "/ingest", "jobs")
     reqs = collect_requirements(uids)
     sent_reqs = send(reqs, "/ingest/requirements", "requirements") if reqs else 0
-    line = f"pushed {sent} job(s) and {sent_reqs} requirement row(s) to {args.url}"
+    # Sent every push, not once at setup: the window is retuned by editing
+    # profile.yaml, and a dashboard still applying last month's number is
+    # exactly the disagreement this is here to close.
+    policy = collect_policy({j["source"] for j in jobs})
+    sent_policy = send(policy, "/ingest/policy", "policy") if policy else 0
+    line = (f"pushed {sent} job(s), {sent_reqs} requirement row(s) and "
+            f"{sent_policy} board window(s) to {args.url}")
 
     if args.with_covers:
         letters = collect_covers(uids)
