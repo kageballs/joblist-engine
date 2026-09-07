@@ -32,6 +32,7 @@ import cover
 import digest as digest_mod
 import filters
 import targeting
+from sources import discovery
 from sources.himalayas import Himalayas
 from sources.indeed import Indeed
 from sources.onlinejobs import OnlineJobs
@@ -141,6 +142,19 @@ def main() -> int:
                # cap is never read, but the tuple shape is shared across
                # sources rather than special-cased per one.
                (Indeed(), 0, "INDEED_MAX_CAPTURE_AGE_DAYS")]
+
+    # Boards that live only on this machine. A clean clone has no sources/local/
+    # and this is a no-op; see sources/discovery.py for why the errors are
+    # logged rather than raised or swallowed.
+    if not discovery.env_disabled():
+        local, local_errors = discovery.discover()
+        local, shadow_errors = discovery.reject_shadowing(local)
+        for message in local_errors + shadow_errors:
+            log(f"[warn] {message}")
+        if local:
+            log(f"[run] local source(s): {', '.join(s[0].name for s in local)}")
+        sources += local
+
     by_name = {s[0].name: s[0] for s in sources}
     if args.source:
         sources = [s for s in sources if s[0].name == args.source]

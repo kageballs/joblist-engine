@@ -10,6 +10,12 @@ profile.yaml
 data/
 !data/.gitkeep
 
+# Boards that exist only on this machine, and their tests. main.py loads
+# anything here that satisfies the Source protocol (sources/discovery.py); a
+# clean clone has neither directory and runs the three committed sources only.
+sources/local/
+tests/local/
+
 # Python
 __pycache__/
 *.pyc

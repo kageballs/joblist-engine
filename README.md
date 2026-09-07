@@ -342,6 +342,7 @@ push.py                ships scored rows to the D1 dashboard
                        refused against any host but localhost
 sources/
   base.py              Job model and the Source protocol
+  discovery.py         loads sources/local/ — boards you do not publish
   himalayas.py         cursor pagination over the Himalayas JSON feed
   onlinejobs.py        offset pagination, scraped HTML, salary normaliser
   indeed.py            reads data/captures/*.json only — no network, ever

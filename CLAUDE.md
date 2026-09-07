@@ -376,3 +376,31 @@ that mixed two sources.
 Commit a fixture under `fixtures/` and a parse test. Parse functions must
 return `None` on unusable input, never raise: Himalayas deprecated `offset`
 on 2026-08-21 with no notice, so upstream drift is expected.
+
+### A source you do not want to publish
+
+`sources/local/` is gitignored and loaded at startup by `sources/discovery.py`.
+Drop in a module with a class carrying `name` and `fetch(since)` and it joins
+the run in the same tuple shape as the committed three; no registry to edit,
+because the failure mode of forgetting a registry is a source that silently
+never runs. Its page cap is a `max_pages` attribute on the class rather than a
+`config.py` constant, since `config.py` is committed and a private board's
+tuning does not belong in a public file.
+
+Nothing else needs changing. `profile.require_boards()` still demands a
+`boards.<name>` block, and that lives in the gitignored `profile.yaml`, so a
+local source's policy is private for free. `tests/local/` is gitignored too.
+
+Three rules the loader enforces, each against a silent failure:
+
+* **A load error is reported, never raised and never swallowed.** Raising lets
+  one typo end a run three working boards would have survived; swallowing lets
+  a private board stop running forever, which looks identical to a quiet market.
+* **A local source cannot take a committed source's name.** Shadowing would
+  point `--source himalayas` at a different feed and apply a board policy to
+  something it was never measured against.
+* **Only classes defined in the file itself register.** Importing `Himalayas`
+  for reference inside a local module would otherwise fetch that board twice.
+
+`JOBLIST_NO_LOCAL=1` runs the committed sources only, for reproducing a problem
+as someone with a clean clone would see it.
