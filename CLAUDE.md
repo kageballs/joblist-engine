@@ -15,6 +15,11 @@ py main.py --rescore        # re-evaluate jobs already marked seen
 
 py main.py --no-cover       # run without auto-drafting letters
 
+py add.py <url>             # add ONE job you found yourself: fetch, score, store
+py add.py <url> --text-file ad.txt   # advert pasted from your browser, no fetch
+py add.py <url> --paste     # same, from stdin
+py add.py <url> --dry-run   # parse and print only; no API call, nothing stored
+
 py cover.py <uid>           # draft a cover letter for one stored job
 py cover.py --top 5         # draft for the 5 highest-scoring stored jobs
 py cover.py <uid> --dry-run # print the prompt, call nothing
@@ -376,6 +381,48 @@ that mixed two sources.
 Commit a fixture under `fixtures/` and a parse test. Parse functions must
 return `None` on unusable input, never raise: Himalayas deprecated `offset`
 on 2026-08-21 with no notice, so upstream drift is expected.
+
+### `add.py` — one job you found yourself
+
+`main.py` answers "what is on the boards today". `add.py` answers "I found this
+one myself, put it through the same rubric": a referral, a board with no feed, a
+site that will not serve a crawler. The job reaches the digest, the dashboard and
+the drafter exactly like a fetched one, so a hand-found posting is not a
+second-class citizen in your own triage.
+
+**One job per invocation, deliberately.** No URL list, no file of links, no
+following links on the page, and `main.py` never calls it. That boundary is the
+design: this reads a page you chose to open, and the moment it takes a list it
+is a crawler, which is a different thing this repo has twice decided not to
+build. A board worth reading in bulk earns a real `sources/` module with a
+measured capability flag, or it is not read.
+
+`--text-file` / `--paste` skip fetching entirely. That is the path for a site
+that answers a plain client with a challenge — `ph.jobstreet.com` returns 403
+with `cf-mitigated: challenge` on the first request (measured 2026-09-07), and
+`himalayas.app` job pages answer 403 as well. You already have the page open;
+copy the advert out of it.
+
+Two rules carry the module, both about not overruling the operator:
+
+* **The funnel advises, it does not veto** (`advise_not_veto`). Everywhere else
+  a rejection is final and right, because the tool is choosing among thousands
+  nobody has read. Here a person already read it and decided. The objection is
+  printed and carried into the digest line, but it never drops the job.
+* **`Manual` declares both capability flags False.** An arbitrary page's silence
+  about hiring region proves nothing, so `filters.evaluate` marks it
+  `region_unverified` and the scorer is told the silence is not evidence — the
+  same discipline as We Work Remotely and `ph.indeed.com`. Salary is read from
+  `baseSalary` when present and an unmappable `unitText` stays `None` rather
+  than being guessed, because guessing a period lets the floor reject a real job
+  on a number the page never meant that way.
+
+The uid is `manual:<url>`, so re-adding the same posting updates it rather than
+creating a twin. The `boards.manual` policy is `display_threshold: 0` (you chose
+it, so it always shows), `draft_at: 60` (lower than the crawled boards — a job
+you went and found beats one that merely survived a funnel), and
+`max_age_days: null` (never retired; the other boards age out because they keep
+producing replacements, and this one does not).
 
 ### A source you do not want to publish
 

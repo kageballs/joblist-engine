@@ -136,6 +136,24 @@ boards:
     # tuned for a board that refreshes itself.
     max_age_days: 7
 
+  # Jobs you added yourself with `py add.py <url>` -- a referral, a board with
+  # no feed, a link someone sent you. Not a crawled board, so its policy is
+  # shaped by one fact: a human already decided this posting was worth looking
+  # at, and the tool should not second-guess that.
+  manual:
+    # 0 because you chose it. A hand-added job must appear in the digest
+    # whatever the model made of it -- hiding it would answer a question you
+    # did not ask.
+    display_threshold: 0
+    # Lower than the crawled boards. You went and found this one, so the odds
+    # it is worth a letter are far better than for a listing that merely
+    # survived a funnel.
+    draft_at: 60
+    # null, never trimmed. Everything else here ages out because a board keeps
+    # producing replacements; this one does not. Retiring a posting you added
+    # by hand after a week would delete a decision, not a stale row.
+    max_age_days: null
+
 scoring:
   # Point this at your own CV as plain text or markdown.
   resume_path: examples/resume.example.md

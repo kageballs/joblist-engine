@@ -334,6 +334,9 @@ filters.py             the deterministic funnel — the heart of it
 scorer.py              one batched Claude call per group of survivors
 cover.py               drafts cover letters — auto for high scorers, on-demand by uid
 blockers.py            local match of asks against what you cannot supply
+add.py                 one job you found yourself, by URL or pasted advert
+                       fetch, score and store it like any other; the funnel
+                       advises but never vetoes something you chose
 report.py              what employers keep asking for, tallied over history
 digest.py              markdown rendering
 store.py               SQLite: seen ids, watermark, runs, rejects, advert text
